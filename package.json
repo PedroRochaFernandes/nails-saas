@@ -1,7 +1,7 @@
 {
-  "name": "nails-agendamento",
+  "name": "nails-saas",
   "version": "1.0.0",
-  "description": "Sistema de agendamento online para nail designers e estúdios de unhas: agenda, serviços, preços, horários e painel do dono.",
+  "description": "nAIls: SaaS de agendamento com IA para nail designers e salões de beleza, com planos por assinatura.",
   "type": "module",
   "main": "server.js",
   "scripts": {

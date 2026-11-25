@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Criar conta — nAIls</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/landing.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 40'><rect x='-4' y='0' width='40' height='40' rx='9' fill='%2307070a'/><g fill='none' stroke='%238b5cf6' stroke-width='3' stroke-linecap='round'><path d='M5 38V14a11 11 0 0 1 22 0v24'/><path d='M16 6c4.2 0 6 4.6 6 9v6.5a6 6 0 0 1-12 0V15c0-4.4 1.8-9 6-9z'/></g></svg>">
+</head>
+<body>
+  <main class="auth">
+    <form class="card" id="signup" autocomplete="on">
+      <a class="logo" href="/"><svg class="nails-mark" width="24" height="30" viewBox="0 0 32 40" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 38V14a11 11 0 0 1 22 0v24"/><path d="M16 6c4.2 0 6 4.6 6 9v6.5a6 6 0 0 1-12 0V15c0-4.4 1.8-9 6-9z"/></svg><span class="wordmark">n<b>AI</b>ls</span></a>
+      <h1>Crie sua conta</h1>
+      <p class="sub" id="plan-note">14 dias grátis, sem cartão de crédito.</p>
+      <div class="field"><label for="salonName">Nome do salão ou estúdio</label><input id="salonName" name="salonName" required minlength="2" maxlength="60" autocomplete="organization" placeholder="Ex.: Studio Ana Nails"></div>
+      <div class="field"><label for="name">Seu nome</label><input id="name" name="name" required minlength="2" maxlength="80" autocomplete="name"></div>
+      <div class="field"><label for="email">E-mail</label><input id="email" name="email" type="email" required autocomplete="email"></div>
+      <div class="field"><label for="whatsapp">WhatsApp do salão (opcional)</label><input id="whatsapp" name="whatsapp" inputmode="tel" autocomplete="tel" placeholder="(11) 91234-5678"></div>
+      <div class="field"><label for="password">Senha (mínimo 8 caracteres)</label><input id="password" name="password" type="password" required minlength="8" autocomplete="new-password"></div>
+      <button class="btn btn-primary btn-lg" id="submit">Criar conta e começar</button>
+      <p class="foot">Já tem conta? <a href="/entrar">Entrar</a></p>
+    </form>
+  </main>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/common.js"></script>
+  <script>
+    const plan = new URLSearchParams(location.search).get('plano');
+    maskPhone($('#whatsapp'));
+    http('GET', '/api/platform/plans').then(({ plans, trialDays }) => {
+      const p = plans[plan];
+      $('#plan-note').textContent = p
+        ? `Plano ${p.name}: ${trialDays} dias grátis, sem cartão de crédito.`
+        : `${trialDays} dias grátis, sem cartão de crédito.`;
+    }).catch(() => {});
+
+    $('#signup').addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const btn = $('#submit');
+      btn.disabled = true;
+      try {
+        const body = { ...Object.fromEntries(new FormData(ev.target)), plan };
+        const { token } = await http('POST', '/api/platform/signup', body);
+        try { localStorage.setItem('nailsToken', token); } catch {}
+        location.href = '/painel?bemvinda=1';
+      } catch (e) {
+        toast(e.message, 'error');
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-// Site do cliente: vitrine, agendamento, consulta/cancelamento e localização
+// Página de agendamento de um salão (/s/<slug>): vitrine, agendamento, consulta/cancelamento e localização
 let info;
 // waitlist = o horário escolhido está ocupado e o cliente vai entrar na fila; queue = quantos já esperam por ele
 const state = { serviceId: null, proId: '', date: null, time: null, waitlist: false, queue: 0 };
@@ -11,10 +11,13 @@ const proName = id => info.pros.find(b => b.id === id)?.name;
 async function init() {
   try {
     info = await http('GET', '/api/info');
-  } catch {
-    document.body.innerHTML = '<p style="padding:40px;text-align:center">Não foi possível carregar a página. Tente novamente em instantes.</p>';
+  } catch (err) {
+    document.body.innerHTML = err.status === 404
+      ? '<p style="padding:40px;text-align:center">Estúdio não encontrado. Confira o endereço que você recebeu.</p>'
+      : '<p style="padding:40px;text-align:center">Não foi possível carregar a página. Tente novamente em instantes.</p>';
     return;
   }
+  if (!info.online) $('#paused').classList.remove('hidden'); // assinatura do estúdio pausada
   const s = info.settings;
   document.title = `${s.shop_name} — Agendamento online`;
   $$('[data-bind]').forEach(el => { el.textContent = s[el.dataset.bind] || ''; });
@@ -202,7 +205,7 @@ function updateSummary() {
   if (state.time) $('#step-time').classList.add('done');
   const formOk = $('#f-name').value.trim().length >= 2 && $('#f-phone').value.replace(/\D/g, '').length >= 10;
   if (formOk) $('#step-form').classList.add('done');
-  $('#confirm').disabled = !(s && state.date && state.time && formOk);
+  $('#confirm').disabled = !info.online || !(s && state.date && state.time && formOk);
 }
 
 async function confirmBooking() {

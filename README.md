@@ -1,8 +1,9 @@
-# 💅 Nail Designer — Agendamento online
+# nAIls — SaaS de agendamento com IA para nail designers e salões de beleza
 
-Sistema completo para nail designers e estúdios de unhas: site da cliente com agendamento online e painel para o estúdio administrar a agenda. Visual minimalista, em preto e rosa.
+Assinatura mensal para salões: cada salão cria sua conta, ganha uma página de agendamento própria
+(`/s/nome-do-salao`) e um painel completo. Agentes de IA chegam na próxima fase.
 
-**Sem dependências**: só precisa do Node.js 22.13+ (usa o SQLite embutido no Node).
+**Sem dependências**: só precisa do Node.js 22.13+ (usa o SQLite embutido no Node e a API REST do Stripe via `fetch`).
 
 ## Rodar
 
@@ -10,66 +11,92 @@ Sistema completo para nail designers e estúdios de unhas: site da cliente com a
 npm start
 ```
 
-- Site da cliente: http://localhost:3000
-- Painel do estúdio: http://localhost:3000/admin — senha inicial **`admin123`** (troque na aba "Estúdio")
+| Endereço | O que é |
+|---|---|
+| http://localhost:3000 | Landing page do nAIls (recursos, agentes de IA, planos) |
+| http://localhost:3000/cadastro | Criar conta de salão (14 dias grátis, sem cartão) |
+| http://localhost:3000/entrar | Login do painel |
+| http://localhost:3000/painel | Painel do salão |
+| http://localhost:3000/s/&lt;slug&gt; | Página de agendamento de cada salão |
 
-Variáveis opcionais: `PORT`, `ADMIN_PASSWORD` (senha inicial na primeira execução), `DB_FILE`.
-Os dados ficam em `data/estudio.db`.
+### Variáveis de ambiente
 
-## Funcionalidades
+| Variável | Para quê |
+|---|---|
+| `PORT` | Porta (padrão 3000) |
+| `DATA_DIR` | Pasta dos bancos (padrão `data/`) |
+| `STRIPE_SECRET_KEY` | Chave do Stripe (`sk_test_...` para testes). **Sem ela, a cobrança roda em modo demonstração**: assinar só ativa o plano, sem cobrar. Em produção (`NODE_ENV=production`) o servidor não sobe sem ela. |
+| `STRIPE_WEBHOOK_SECRET` | Segredo do webhook (`whsec_...`), para receber os eventos em `/api/billing/webhook` |
 
-**Cliente (`/`)**
-- Serviços com preço e duração (manicure, pedicure, mão + pé, nail art, spa das mãos, esmaltação em gel, alongamento em gel — tudo editável)
-- Agendamento em 5 passos: serviço → profissional (ou "qualquer profissional") → dia → horário livre → nome/telefone
-- Horários livres consideram expediente, intervalo de almoço, folgas e outras clientes
-- Horário já agendado aparece como **ocupado** (indisponível), com a opção de entrar na **fila de espera**
-- Código de confirmação + atalho para avisar pelo WhatsApp
-- Consulta e cancelamento online pelo código + telefone (também mostra o lugar na fila e permite sair dela)
-- Para cancelar, a cliente **precisa informar o motivo**; depois, o WhatsApp abre com a mensagem pronta para a profissional (ou para o estúdio, se ela não tiver número cadastrado)
-- Endereço, mapa, link "como chegar", horário de funcionamento e status "aberto agora"
+## Assinatura e planos
 
-**Estúdio (`/admin`)**
-- **Agenda** do dia por profissional, com faturamento previsto/realizado e status (confirmado, atendido, cancelado, não compareceu)
-- **Agendamento manual** (cliente que ligou ou mandou mensagem)
-- **Cancelar pelo painel**: com motivo (opcional), e a mensagem para a cliente sai pronta no WhatsApp
-- **Aviso de cancelamento**: quando uma cliente cancela pelo site, o painel mostra quem, quando e o motivo
-- **WhatsApp de cada profissional**: recebe os avisos de cancelamento das clientes dela
-- **Fila de espera**: lista de quem aguarda cada horário do dia; quando alguém ganha a vaga, aparece um aviso com botão para avisar a cliente pelo WhatsApp
-- **Serviços e preços**: criar, editar, desativar
-- **Profissionais e expediente**: horário de cada dia da semana e intervalo de almoço por profissional
-- **Folgas e bloqueios**: dia inteiro ou faixa de horário, para uma profissional ou o estúdio todo (avisa se já houver clientes marcadas)
-- **Configurações**: nome, endereço (mapa), telefone, WhatsApp, Instagram, intervalo entre horários, antecedência mínima, dias à frente, prazo de cancelamento
+| Plano | Preço | Profissionais ativas |
+|---|---|---|
+| Essencial | R$ 49/mês | 1 |
+| Profissional | R$ 99/mês | até 5 (e agentes de IA quando lançados) |
+| Studio | R$ 179/mês | ilimitadas |
 
-## Como funciona a fila de espera
+Preços e recursos ficam em `billing.js` (`PLANS`); a landing page e o painel leem de lá.
 
-1. A cliente toca em um horário ocupado e entra na fila com nome e telefone. Recebe um código.
-2. Quando o horário vaga (cliente cancelou, estúdio cancelou, bloqueio removido ou expediente ampliado), a **primeira da fila é agendada automaticamente**, com o mesmo código.
-3. O painel mostra "Vaga liberada para Fulana" com um botão que abre o WhatsApp com a mensagem pronta. O envio **não é automático**: o estúdio clica para avisar.
-4. Vaga que surge em cima da hora (dentro da antecedência mínima de agendamento) não é preenchida automaticamente: a cliente continua na lista do painel e o estúdio pode chamá-la se quiser. Passado o horário, a fila se encerra.
+- **Teste grátis** de 14 dias com os limites do plano escolhido no cadastro (padrão: Profissional).
+- **Sem assinatura** (teste encerrado ou cancelada): a página do salão continua no ar, mas **não aceita agendamentos**, e o painel mostra o aviso para assinar.
+- **Pagamento pendente**: a agenda segue funcionando enquanto o Stripe tenta cobrar de novo.
+- O limite de profissionais é conferido ao cadastrar ou reativar uma profissional.
 
-Quem escolhe "qualquer profissional" só entra na fila se todas estiverem ocupadas naquele horário, e fica com a primeira que vagar.
+### Stripe
+
+1. Crie uma conta no Stripe e copie a chave secreta de teste (`sk_test_...`).
+2. Rode com `STRIPE_SECRET_KEY=sk_test_... npm start`.
+3. Os preços são criados no Stripe sozinhos na primeira assinatura de cada plano (`lookup_key` `nails_<plano>`).
+   Mudar o valor em `PLANS` cria um preço novo automaticamente.
+4. Webhook: aponte para `https://seu-dominio/api/billing/webhook` com os eventos
+   `checkout.session.completed`, `customer.subscription.created/updated/deleted` e `invoice.payment_failed`,
+   e configure `STRIPE_WEBHOOK_SECRET`. Para testar no computador:
+   `stripe listen --forward-to localhost:3000/api/billing/webhook`.
+   Mesmo sem webhook, ao voltar do checkout o painel confirma o pagamento direto no Stripe.
+5. Cartão de teste: `4242 4242 4242 4242`, qualquer data futura e CVC.
+6. Ative o **portal do cliente** no Stripe (Configurações → Billing → Customer portal): é por ele que o salão troca o cartão, vê faturas e cancela.
+
+## Como os dados são separados
+
+```
+data/nails.db          plataforma: salões, contas, sessões e assinaturas
+data/saloes/<id>.db    um banco por salão: serviços, profissionais, agenda, fila de espera
+```
+
+Cada requisição roda "dentro" de um salão (`runAsSalon` em `db.js`, com `AsyncLocalStorage`), e `db` aponta
+para o banco daquele salão. Assim um salão nunca enxerga dados de outro, e o código da agenda não precisa
+repetir o filtro de salão em cada consulta.
+
+Senhas com scrypt; sessões de 30 dias guardadas só como hash do token; limite de tentativas de login e de cadastros por IP.
+
+## Funcionalidades da agenda (por salão)
+
+- Serviços com preço e duração; agendamento em 5 passos (serviço → profissional → dia → horário → dados)
+- Só aparecem horários livres (expediente, almoço, folgas e outras clientes)
+- **Fila de espera**: horário ocupado → a cliente entra na fila; se vagar, a primeira da fila ganha o horário automaticamente
+- Consulta e cancelamento pelo código + telefone, com motivo e mensagem pronta para o WhatsApp
+- Painel: agenda por profissional, faturamento previsto/realizado, status, agendamento manual,
+  fila de espera, serviços, profissionais e expediente, folgas e bloqueios, dados do salão, assinatura
 
 ## Estrutura
 
 ```
-server.js        API REST + servidor de arquivos
-db.js            Banco SQLite, esquema e dados iniciais
+server.js        API REST, rotas por salão (/api/s/<slug>/...), contas e servidor de arquivos
+db.js            Banco da plataforma, banco por salão e contexto do salão atual
+billing.js       Planos, situação da assinatura e integração com o Stripe
 public/
-  index.html     Site da cliente
-  app.js
-  admin.html     Painel do estúdio
-  admin.js
-  common.js      Funções compartilhadas
-  style.css      Tema preto e rosa
+  landing.html   Página de vendas do nAIls        landing.css
+  cadastro.html  Criar conta                       entrar.html   Login
+  index.html     Página de agendamento do salão    app.js
+  admin.html     Painel do salão                   admin.js
+  common.js      Funções compartilhadas            style.css     Tema preto e roxo nAIls
 ```
 
-## Vídeo de apresentação
+## Próxima fase: agentes de IA
 
-`apresentacao/nails-apresentacao.mp4` é um vídeo de 1 min 50 s, com narração, para mostrar o sistema a nail designers. Ele é gerado por código a partir das telas reais do sistema; veja `apresentacao/LEIA-ME.md` para editar e gerar de novo.
+- **Lembretes e confirmações**: lembrete na véspera, pedido de confirmação e oferta da vaga à fila de espera se a cliente desmarcar
+- **Assistente da dona**: resumo do dia, faturamento, clientes que sumiram com mensagem de reativação, horários fracos
+- **Conteúdo para Instagram**: legendas e ideias de posts, promoções relâmpago para horários vagos
 
-## Próximos passos sugeridos para produção
-- HTTPS e hospedagem (Railway, Render, VPS)
-- Lembretes automáticos por WhatsApp/SMS (ex.: API do WhatsApp Business)
-- Login individual por profissional
-- Galeria de trabalhos (fotos de nail art) no site
-- Pagamento antecipado / sinal via Pix
+Outros passos para produção: hospedagem com HTTPS, envio de e-mail (recuperar senha), backups da pasta `data/`.

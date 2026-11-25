@@ -1,30 +1,18 @@
-// Painel do dono: agenda, serviços/preços, profissionais/expediente, bloqueios e configurações
+// Painel do salão: agenda, serviços/preços, profissionais/expediente, bloqueios, configurações e assinatura
 let token = null;
-try { token = sessionStorage.getItem('adminToken'); } catch {}
-let services = [], pros = [];
+try { token = localStorage.getItem('nailsToken'); } catch {}
+let services = [], pros = [], account = null;
 
 const api = (method, url, body) => http(method, url, body, token).catch(err => {
-  if (err.status === 401 && !url.endsWith('/login')) showLogin();
+  if (err.status === 401) showLogin();
   throw err;
 });
 
-// ------------------------------------------------------------- login
+// ------------------------------------------------------------- login (página /entrar)
 function showLogin() {
-  token = null;
-  try { sessionStorage.removeItem('adminToken'); } catch {}
-  $('#app-view').classList.add('hidden');
-  $('#login-view').classList.remove('hidden');
+  try { localStorage.removeItem('nailsToken'); } catch {}
+  location.href = '/entrar';
 }
-
-$('#login-form').addEventListener('submit', async ev => {
-  ev.preventDefault();
-  try {
-    ({ token } = await http('POST', '/api/admin/login', { password: $('#password').value }));
-    try { sessionStorage.setItem('adminToken', token); } catch {}
-    $('#password').value = '';
-    start();
-  } catch (e) { toast(e.message, 'error'); }
-});
 
 $('#logout').addEventListener('click', async () => {
   await api('POST', '/api/admin/logout').catch(() => {});
@@ -33,26 +21,131 @@ $('#logout').addEventListener('click', async () => {
 
 async function start() {
   try {
-    [services, pros] = await Promise.all([api('GET', '/api/admin/services'), api('GET', '/api/admin/pros')]);
+    [services, pros, account] = await Promise.all([
+      api('GET', '/api/admin/services'), api('GET', '/api/admin/pros'), api('GET', '/api/admin/account')]);
   } catch { return; }
-  $('#login-view').classList.add('hidden');
   $('#app-view').classList.remove('hidden');
   const s = await api('GET', '/api/admin/settings');
   $('#shop-name').textContent = s.shop_name;
   fillSettings(s);
   fillProSelects();
+  renderAccount();
   if (!$('#agenda-date').value) $('#agenda-date').value = localDate();
   loadAgenda();
   renderServices();
   renderPros();
   loadBlocks();
+
+  const params = new URLSearchParams(location.search);
+  if (params.has('bemvinda')) toast('Conta criada! Seu teste grátis começou. Confira os serviços e o expediente.', 'ok');
+  if (params.get('checkout')) syncCheckout(params.get('checkout'));
+  if (params.has('bemvinda') || params.has('checkout')) history.replaceState(null, '', '/painel' + location.hash);
+  if (location.hash === '#assinatura') openTab('assinatura');
 }
 
 // ------------------------------------------------------------- abas
-$$('.tab').forEach(t => t.addEventListener('click', () => {
-  $$('.tab').forEach(x => x.setAttribute('aria-selected', x === t));
-  $$('.panel').forEach(p => p.classList.toggle('hidden', p.dataset.panel !== t.dataset.tab));
-}));
+function openTab(name) {
+  $$('.tab').forEach(x => x.setAttribute('aria-selected', x.dataset.tab === name));
+  $$('.panel').forEach(p => p.classList.toggle('hidden', p.dataset.panel !== name));
+}
+$$('.tab').forEach(t => t.addEventListener('click', () => openTab(t.dataset.tab)));
+
+// ------------------------------------------------------------- conta e assinatura
+const pageUrl = () => `${location.origin}/s/${account.salon.slug}`;
+const fmtDay = iso => new Date(iso).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long' });
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+function renderAccount() {
+  const { salon, plans, billingMode } = account;
+  $('#page-link').href = $('#my-page').href = pageUrl();
+  $('#page-link').textContent = pageUrl().replace(/^https?:\/\//, '');
+
+  // aviso no topo do painel
+  let banner = '';
+  if (!salon.online) {
+    banner = `<div class="banner warn"><span><strong>Sua agenda online está pausada</strong> (${esc(salon.statusLabel.toLowerCase())}). As clientes veem a página, mas não conseguem agendar.</span>
+      <button class="btn btn-primary btn-sm" data-goto="assinatura">Escolher um plano</button></div>`;
+  } else if (salon.status === 'trialing') {
+    banner = `<div class="banner info"><span>Teste grátis: <strong>${plural(salon.trialDaysLeft, 'dia')}</strong> até ${fmtDay(salon.trialEndsAt)}.</span>
+      <button class="btn btn-sm" data-goto="assinatura">Ver planos</button></div>`;
+  } else if (salon.status === 'past_due') {
+    banner = `<div class="banner warn"><span><strong>Não conseguimos cobrar sua assinatura.</strong> Atualize a forma de pagamento para não pausar a agenda.</span>
+      <button class="btn btn-sm" data-goto="assinatura">Resolver</button></div>`;
+  }
+  $('#account-banner').innerHTML = banner;
+  $$('[data-goto]').forEach(b => b.addEventListener('click', () => openTab(b.dataset.goto)));
+
+  // situação atual
+  const paid = ['active', 'past_due'].includes(salon.status);
+  let detail = '';
+  if (salon.status === 'trialing' && salon.online) detail = `Teste grátis até ${fmtDay(salon.trialEndsAt)}, com os recursos do plano ${esc(salon.planName)}.`;
+  else if (paid && salon.currentPeriodEnd) detail = `Renova em ${fmtDay(salon.currentPeriodEnd)}.`;
+  else if (!salon.online) detail = 'Escolha um plano para reativar a agenda online.';
+  $('#sub-status').innerHTML = `
+    <div><span class="muted small">Plano ${esc(salon.planName)} · ${esc(salon.statusLabel)}</span><br>
+      <b>${paid ? `${money(plans[salon.plan].priceCents)}/mês` : esc(salon.statusLabel)}</b>
+      <p class="muted small" style="margin:4px 0 0">${detail}</p></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${salon.hasBilling ? '<button class="btn btn-sm" id="portal">Pagamento e faturas</button>' : ''}
+      ${billingMode === 'demo' && paid ? '<button class="btn btn-sm btn-danger" id="demo-cancel">Cancelar (demonstração)</button>' : ''}
+    </div>`;
+
+  $('#plans').innerHTML = Object.entries(plans).map(([key, p]) => {
+    const current = key === salon.plan && paid;
+    const label = current ? 'Plano atual' : paid ? `Mudar para ${p.name}` : `Assinar ${p.name}`;
+    return `<div class="card plan ${current ? 'current' : ''}">
+      <div><strong>${esc(p.name)}</strong> ${p.highlight ? '<span class="tag">Mais escolhido</span>' : ''}<br><span class="muted small">${esc(p.pitch)}</span></div>
+      <div class="price">${money(p.priceCents)} <small>/mês</small></div>
+      <ul>${p.features.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
+      <button class="btn ${current ? '' : 'btn-primary'}" data-plan="${key}" ${current ? 'disabled' : ''}>${label}</button>
+    </div>`;
+  }).join('');
+  $$('[data-plan]').forEach(b => b.addEventListener('click', () => checkout(b.dataset.plan, b)));
+  $('#billing-note').textContent = billingMode === 'demo'
+    ? 'Modo demonstração: nenhum pagamento é cobrado. Configure STRIPE_SECRET_KEY no servidor para cobrar de verdade.'
+    : 'Pagamento seguro pelo Stripe. Troque o cartão, veja faturas ou cancele em "Pagamento e faturas".';
+
+  $('#portal')?.addEventListener('click', async ev => {
+    ev.target.disabled = true;
+    try { location.href = (await api('POST', '/api/admin/billing/portal')).url; } catch (e) { toast(e.message, 'error'); ev.target.disabled = false; }
+  });
+  $('#demo-cancel')?.addEventListener('click', async () => {
+    if (!confirm('Cancelar a assinatura? A agenda online fica pausada.')) return;
+    await api('POST', '/api/admin/billing/cancel').catch(e => toast(e.message, 'error'));
+    refreshAccount();
+  });
+}
+
+async function refreshAccount() {
+  account = await api('GET', '/api/admin/account');
+  renderAccount();
+}
+
+async function checkout(plan, btn) {
+  btn.disabled = true;
+  try {
+    const r = await api('POST', '/api/admin/billing/checkout', { plan });
+    if (r.url) { location.href = r.url; return; }
+    toast(r.demo ? 'Plano ativado (modo demonstração).' : 'Plano alterado.', 'ok');
+    await refreshAccount();
+  } catch (e) { toast(e.message, 'error'); btn.disabled = false; }
+}
+
+/** Voltou do pagamento no Stripe: confirma e atualiza a situação. */
+async function syncCheckout(sessionId) {
+  openTab('assinatura');
+  try {
+    account = await api('POST', '/api/admin/billing/sync', { sessionId });
+    renderAccount();
+    toast(account.salon.online ? 'Assinatura ativa. Obrigado!' : 'Pagamento em processamento. Atualize em instantes.', 'ok');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+$('#copy-link').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(pageUrl()); toast('Link copiado. Coloque na bio do Instagram!', 'ok'); }
+  catch { toast(pageUrl()); }
+});
+
 
 function fillProSelects() {
   const opts = pros.filter(b => b.active).map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join('');

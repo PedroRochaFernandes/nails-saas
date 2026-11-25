@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Painel do Estúdio</title>
+  <title>Painel — nAIls</title>
   <meta name="robots" content="noindex">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2309090b'/><rect x='13' y='4' width='6' height='9' rx='1.5' fill='%23f6f1f4'/><rect x='11.5' y='12' width='9' height='3' rx='1' fill='%23f6f1f4'/><rect x='8.5' y='15' width='15' height='14' rx='4.5' fill='%23ff4f97'/></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 40'><rect x='-4' y='0' width='40' height='40' rx='9' fill='%2307070a'/><g fill='none' stroke='%238b5cf6' stroke-width='3' stroke-linecap='round'><path d='M5 38V14a11 11 0 0 1 22 0v24'/><path d='M16 6c4.2 0 6 4.6 6 9v6.5a6 6 0 0 1-12 0V15c0-4.4 1.8-9 6-9z'/></g></svg>">
   <style>
     .login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
     .login .card { width: min(380px, 100%); }
@@ -18,10 +18,10 @@
     .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
     .toolbar input[type="date"] { width: auto; }
     .stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 20px; }
-    .stat b { display: block; font: 400 2.4rem/1.1 var(--display); font-variant-numeric: tabular-nums; }
+    .stat b { display: block; font: 600 2.1rem/1.1 var(--display); font-variant-numeric: tabular-nums; }
     .appt { display: grid; grid-template-columns: 70px 1fr auto; gap: 14px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border); }
     .appt:last-child { border-bottom: 0; }
-    .appt .time { font: 400 1.6rem/1.1 var(--display); font-variant-numeric: tabular-nums; }
+    .appt .time { font: 600 1.25rem/1.1 var(--display); font-variant-numeric: tabular-nums; }
     .appt.cancelled { opacity: .5; }
     .appt select { width: auto; padding: 6px 8px; font-size: .85rem; }
     @media (max-width: 600px) { .appt { grid-template-columns: 56px 1fr; } .appt > :last-child { grid-column: 1 / -1; } }
@@ -44,36 +44,49 @@
     .appt.cancelled .cancel-why { opacity: 1; }
     .wa-preview { white-space: pre-wrap; font-size: .9rem; padding: 12px 14px; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); margin: 12px 0 16px; }
     .tag { display: inline-block; font-size: .72rem; font-weight: 600; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--accent-text); color: var(--accent-text); vertical-align: 1px; }
+    .nav-shop { padding-left: 14px; border-left: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    @media (max-width: 600px) { .nav-shop { display: none; } }
+    .share { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin: 24px 0 0; padding: 14px 18px; }
+    .share a { font-weight: 600; word-break: break-all; }
+    .sub-status { display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+    .sub-status b { font: 600 1.4rem var(--display); letter-spacing: -.02em; }
+    .plans { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+    .plan { display: flex; flex-direction: column; gap: 10px; }
+    .plan.current { border-color: var(--accent-text); background: var(--accent-soft); }
+    .plan .price { font: 600 1.9rem/1 var(--display); letter-spacing: -.02em; }
+    .plan .price small { font: 400 .85rem var(--font); color: var(--muted); }
+    .plan ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: .9rem; }
+    .plan .btn { margin-top: auto; }
+    .banner { padding: 12px 16px; border-radius: 12px; margin-top: 24px; font-size: .92rem; display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+    .banner.warn { border: 1px solid rgba(255, 107, 107, .4); background: rgba(255, 107, 107, .07); }
+    .banner.info { border: 1px solid rgba(167, 139, 250, .35); background: var(--accent-soft); }
     .check { display: flex; gap: 8px; align-items: center; color: var(--text); font-size: .95rem; margin: 0; }
   </style>
 </head>
 <body>
-  <!-- LOGIN -->
-  <div class="login" id="login-view">
-    <form class="card" id="login-form">
-      <h2>Área da profissional</h2>
-      <div class="field"><label for="password">Senha</label><input type="password" id="password" required autocomplete="current-password" autofocus></div>
-      <button class="btn btn-primary" style="width:100%">Entrar</button>
-      <p class="muted small" style="margin-bottom:0"><a href="/">← Voltar ao site</a></p>
-    </form>
-  </div>
-
   <!-- PAINEL -->
   <div class="hidden" id="app-view">
     <nav class="nav">
       <div class="container">
-        <a class="brand" href="/" target="_blank"><svg class="brand-mark" width="14" height="26" viewBox="0 0 14 26" aria-hidden="true"><rect x="4.5" y="0" width="5" height="9" rx="1.5" fill="#f6f1f4"/><rect x="3" y="8.5" width="8" height="2.5" rx="1" fill="#f6f1f4"/><rect x="0.5" y="11" width="13" height="15" rx="4" fill="#ff4f97"/><rect x="3" y="14" width="2" height="8" rx="1" fill="#ffffff" opacity=".5"/></svg><span id="shop-name">Painel</span></a>
-        <div class="nav-links"><button class="btn btn-sm" id="logout">Sair</button></div>
+        <a class="brand" href="/painel"><svg class="nails-mark" width="20" height="25" viewBox="0 0 32 40" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 38V14a11 11 0 0 1 22 0v24"/><path d="M16 6c4.2 0 6 4.6 6 9v6.5a6 6 0 0 1-12 0V15c0-4.4 1.8-9 6-9z"/></svg><span class="wordmark">n<b>AI</b>ls</span></a>
+        <span class="muted small nav-shop" id="shop-name"></span>
+        <div class="nav-links"><a class="btn btn-sm" id="my-page" target="_blank" rel="noopener">Ver minha página</a><button class="btn btn-sm" id="logout">Sair</button></div>
       </div>
     </nav>
 
     <main class="container" style="padding-bottom:64px">
+      <div id="account-banner"></div>
+      <div class="share card">
+        <div><span class="muted small">Sua página de agendamento</span><br><a id="page-link" target="_blank" rel="noopener"></a></div>
+        <button class="btn btn-sm" id="copy-link" type="button">Copiar link</button>
+      </div>
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" data-tab="agenda" aria-selected="true">Agenda</button>
         <button class="tab" role="tab" data-tab="services">Serviços e preços</button>
         <button class="tab" role="tab" data-tab="pros">Profissionais e expediente</button>
         <button class="tab" role="tab" data-tab="blocks">Folgas e bloqueios</button>
         <button class="tab" role="tab" data-tab="settings">Estúdio</button>
+        <button class="tab" role="tab" data-tab="assinatura">Assinatura</button>
       </div>
 
       <!-- AGENDA -->
@@ -163,10 +176,18 @@
           <h3>Trocar senha do painel</h3>
           <div class="row">
             <div class="field"><label for="p-current">Senha atual</label><input type="password" id="p-current" required autocomplete="current-password"></div>
-            <div class="field"><label for="p-next">Nova senha</label><input type="password" id="p-next" required minlength="6" autocomplete="new-password"></div>
+            <div class="field"><label for="p-next">Nova senha</label><input type="password" id="p-next" required minlength="8" autocomplete="new-password"></div>
           </div>
           <button class="btn">Trocar senha</button>
         </form>
+      </section>
+
+      <!-- ASSINATURA -->
+      <section class="panel hidden" data-panel="assinatura" style="padding:0">
+        <div class="card sub-status" id="sub-status"></div>
+        <h3 style="margin-top:28px">Planos</h3>
+        <div class="plans" id="plans"></div>
+        <p class="muted small" id="billing-note"></p>
       </section>
     </main>
   </div>

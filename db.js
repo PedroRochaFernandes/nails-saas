@@ -1,16 +1,62 @@
-// Banco de dados SQLite (embutido no Node.js, sem dependências externas)
+// Bancos de dados SQLite (embutido no Node.js, sem dependências externas)
+//
+// nAIls é multi-salão:
+//   data/nails.db           -> plataforma: salões, contas, sessões e assinaturas
+//   data/saloes/<id>.db     -> um banco por salão: serviços, profissionais, agenda, fila de espera...
+//
+// Cada salão em um arquivo separado deixa os dados de um salão fisicamente isolados dos outros.
+// O código da agenda usa `db` sem saber de qual salão é: o salão da requisição atual fica num
+// AsyncLocalStorage (runAsSalon), e `db` encaminha para o banco certo.
 import { DatabaseSync } from 'node:sqlite';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { scryptSync, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const dataDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
-mkdirSync(dataDir, { recursive: true });
+const dataDir = process.env.DATA_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
+const salonsDir = path.join(dataDir, 'saloes');
+mkdirSync(salonsDir, { recursive: true });
 
-export const db = new DatabaseSync(process.env.DB_FILE || path.join(dataDir, 'estudio.db'));
+// ================================================================ plataforma
+export const platform = new DatabaseSync(path.join(dataDir, 'nails.db'));
+platform.exec(`
+  PRAGMA journal_mode = WAL;
+  PRAGMA foreign_keys = ON;
 
-db.exec(`
+  CREATE TABLE IF NOT EXISTS salons (
+    id                     INTEGER PRIMARY KEY,
+    slug                   TEXT NOT NULL UNIQUE,     -- endereço da página: /s/<slug>
+    name                   TEXT NOT NULL,
+    plan                   TEXT NOT NULL DEFAULT 'profissional',
+    status                 TEXT NOT NULL DEFAULT 'trialing', -- trialing | active | past_due | canceled | incomplete
+    trial_ends_at          TEXT,                     -- ISO (UTC)
+    current_period_end     TEXT,                     -- ISO (UTC): fim do período pago atual
+    stripe_customer_id     TEXT,
+    stripe_subscription_id TEXT,
+    created_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY,
+    salon_id      INTEGER NOT NULL REFERENCES salons(id) ON DELETE CASCADE,
+    name          TEXT NOT NULL,
+    email         TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  );
+
+  -- Sessões de login do painel. Guarda só o hash do token: quem ler o banco não consegue entrar.
+  CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL  -- ms desde 1970
+  );
+  CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+`);
+
+// ================================================================ banco de cada salão
+const TENANT_SCHEMA = `
   PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
 
@@ -30,14 +76,15 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS pros (
-    id     INTEGER PRIMARY KEY,
-    name   TEXT NOT NULL,
-    active INTEGER NOT NULL DEFAULT 1
+    id       INTEGER PRIMARY KEY,
+    name     TEXT NOT NULL,
+    active   INTEGER NOT NULL DEFAULT 1,
+    whatsapp TEXT NOT NULL DEFAULT ''   -- recebe os avisos de cancelamento
   );
 
   -- Expediente semanal de cada profissional (weekday: 0=domingo ... 6=sábado; horários em minutos)
   CREATE TABLE IF NOT EXISTS working_hours (
-    pro_id   INTEGER NOT NULL REFERENCES pros(id) ON DELETE CASCADE,
+    pro_id      INTEGER NOT NULL REFERENCES pros(id) ON DELETE CASCADE,
     weekday     INTEGER NOT NULL,
     start_min   INTEGER NOT NULL,
     end_min     INTEGER NOT NULL,
@@ -46,10 +93,10 @@ db.exec(`
     PRIMARY KEY (pro_id, weekday)
   );
 
-  -- Bloqueios: folgas, feriados, compromissos (pro_id NULL = estúdio inteiro)
+  -- Bloqueios: folgas, feriados, compromissos (pro_id NULL = salão inteiro)
   CREATE TABLE IF NOT EXISTS blocks (
     id        INTEGER PRIMARY KEY,
-    pro_id INTEGER REFERENCES pros(id) ON DELETE CASCADE,
+    pro_id    INTEGER REFERENCES pros(id) ON DELETE CASCADE,
     date      TEXT NOT NULL,
     start_min INTEGER NOT NULL,
     end_min   INTEGER NOT NULL,
@@ -59,7 +106,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS appointments (
     id             INTEGER PRIMARY KEY,
     code           TEXT NOT NULL UNIQUE,
-    pro_id      INTEGER NOT NULL REFERENCES pros(id),
+    pro_id         INTEGER NOT NULL REFERENCES pros(id),
     service_id     INTEGER NOT NULL REFERENCES services(id),
     date           TEXT NOT NULL,
     start_min      INTEGER NOT NULL,
@@ -69,6 +116,10 @@ db.exec(`
     notes          TEXT NOT NULL DEFAULT '',
     price_cents    INTEGER NOT NULL,
     status         TEXT NOT NULL DEFAULT 'confirmed',
+    cancel_reason  TEXT NOT NULL DEFAULT '',   -- motivo informado ao cancelar
+    cancelled_by   TEXT,                       -- 'cliente' | 'estudio'
+    cancelled_at   TEXT,
+    cancel_seen    INTEGER NOT NULL DEFAULT 1, -- 0 = cancelamento da cliente ainda não visto no painel
     created_at     TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
   );
 
@@ -77,7 +128,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS waitlist (
     id             INTEGER PRIMARY KEY,
     code           TEXT NOT NULL UNIQUE,
-    pro_id      INTEGER REFERENCES pros(id) ON DELETE CASCADE,
+    pro_id         INTEGER REFERENCES pros(id) ON DELETE CASCADE,
     service_id     INTEGER NOT NULL REFERENCES services(id),
     date           TEXT NOT NULL,
     start_min      INTEGER NOT NULL,
@@ -86,27 +137,96 @@ db.exec(`
     notes          TEXT NOT NULL DEFAULT '',
     status         TEXT NOT NULL DEFAULT 'waiting',  -- waiting | promoted | cancelled
     appointment_id INTEGER REFERENCES appointments(id),
-    notified       INTEGER NOT NULL DEFAULT 0,       -- dono já avisou o cliente que a vaga saiu?
+    notified       INTEGER NOT NULL DEFAULT 0,       -- o salão já avisou a cliente que a vaga saiu?
     created_at     TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
   );
 
   CREATE INDEX IF NOT EXISTS idx_wait_date ON waitlist(date, start_min);
   CREATE INDEX IF NOT EXISTS idx_appt_date ON appointments(date, pro_id);
   CREATE INDEX IF NOT EXISTS idx_blocks_date ON blocks(date);
-`);
+`;
 
-// ---------- Colunas acrescentadas depois da primeira versão (bancos antigos ganham a coluna sem perder dados)
-function addColumn(table, column, definition) {
-  if (!db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+const DEFAULT_SETTINGS = {
+  shop_name: 'Meu estúdio',
+  about: 'Esmaltação em gel, alongamento e nail art com acabamento impecável.',
+  address: '',
+  phone: '',
+  whatsapp: '',
+  instagram: '',
+  slot_step: '15',           // intervalo entre horários oferecidos (min)
+  min_advance_min: '60',     // antecedência mínima para a cliente agendar (min)
+  max_days_ahead: '30',      // até quantos dias à frente a cliente pode agendar
+  cancel_advance_min: '120', // antecedência mínima para a cliente cancelar online (min)
+};
+
+const DEFAULT_SERVICES = [
+  ['Manicure', 'Cutilagem, lixamento e esmaltação', 3500, 30],
+  ['Pedicure', 'Cutilagem, esfoliação e esmaltação', 4000, 30],
+  ['Mão + Pé', 'Manicure e pedicure completas', 7000, 60],
+  ['Nail art', 'Decoração em até 2 unhas: desenho, pedraria ou foil', 2000, 15],
+  ['Spa das mãos', 'Esfoliação e hidratação profunda', 2500, 15],
+  ['Esmaltação em gel', 'Brilho e duração de até 3 semanas', 8000, 60],
+  ['Alongamento em gel', 'Unhas alongadas no molde F1, com esmaltação', 16000, 120],
+];
+
+const tenants = new Map(); // salonId -> DatabaseSync aberto
+
+function openTenant(salonId) {
+  const id = Number(salonId);
+  if (!Number.isInteger(id) || id <= 0) throw new Error('Salão inválido');
+  let t = tenants.get(id);
+  if (!t) {
+    t = new DatabaseSync(path.join(salonsDir, `${id}.db`));
+    t.exec(TENANT_SCHEMA);
+    tenants.set(id, t);
+  }
+  return t;
+}
+
+/**
+ * Cria o banco de um salão novo com dados iniciais prontos para usar:
+ * configurações, serviços de exemplo e a dona como primeira profissional (ter-sáb).
+ */
+export function initSalonDb(salonId, { shopName, ownerName, whatsapp = '' }) {
+  const t = openTenant(salonId);
+  if (t.prepare('SELECT COUNT(*) n FROM settings').get().n > 0) return;
+  t.exec('BEGIN');
+  try {
+    const setS = t.prepare('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)');
+    for (const [k, v] of Object.entries({ ...DEFAULT_SETTINGS, shop_name: shopName, whatsapp })) setS.run(k, String(v));
+
+    const insS = t.prepare('INSERT INTO services(name, description, price_cents, duration_min, sort) VALUES (?, ?, ?, ?, ?)');
+    DEFAULT_SERVICES.forEach((s, i) => insS.run(...s, i));
+
+    const proId = Number(t.prepare('INSERT INTO pros(name, whatsapp) VALUES (?, ?)').run(ownerName, whatsapp).lastInsertRowid);
+    const insH = t.prepare('INSERT INTO working_hours VALUES (?, ?, ?, ?, ?, ?)');
+    for (const wd of [2, 3, 4, 5]) insH.run(proId, wd, 9 * 60, 19 * 60, 12 * 60, 13 * 60); // ter-sex 09-19
+    insH.run(proId, 6, 8 * 60, 17 * 60, 12 * 60, 13 * 60);                                  // sáb 08-17
+    t.exec('COMMIT');
+  } catch (err) {
+    t.exec('ROLLBACK');
+    throw err;
   }
 }
-addColumn('pros', 'whatsapp', "TEXT NOT NULL DEFAULT ''");             // recebe os avisos de cancelamento
-addColumn('appointments', 'cancel_reason', "TEXT NOT NULL DEFAULT ''");   // motivo informado ao cancelar
-addColumn('appointments', 'cancelled_by', 'TEXT');                        // 'cliente' | 'estudio'
-addColumn('appointments', 'cancelled_at', 'TEXT');
-addColumn('appointments', 'cancel_seen', 'INTEGER NOT NULL DEFAULT 1');   // 0 = cancelamento do cliente ainda não visto no painel
 
+// ---------------------------------------------------------------- salão da requisição atual
+const context = new AsyncLocalStorage();
+
+/** Executa `fn` com `db` apontando para o banco do salão. Funciona também com funções async. */
+export const runAsSalon = (salonId, fn) => context.run({ salonId: Number(salonId), db: openTenant(salonId) }, fn);
+export const currentSalonId = () => context.getStore()?.salonId ?? null;
+
+/** Banco do salão atual. Usar fora de runAsSalon é um erro de programação. */
+export const db = new Proxy({}, {
+  get(_, prop) {
+    const ctx = context.getStore();
+    if (!ctx) throw new Error('Nenhum salão no contexto (use runAsSalon)');
+    const v = ctx.db[prop];
+    return typeof v === 'function' ? v.bind(ctx.db) : v;
+  },
+});
+
+// ---------------------------------------------------------------- utilitários
 export function hashPassword(pw) {
   const salt = randomBytes(16);
   return `${salt.toString('hex')}:${scryptSync(pw, salt, 64).toString('hex')}`;
@@ -129,58 +249,15 @@ export function setSetting(key, value) {
     .run(key, String(value));
 }
 
-export function tx(fn) {
-  db.exec('BEGIN');
+/** Transação no banco informado (padrão: o do salão atual). */
+export function tx(fn, database = db) {
+  database.exec('BEGIN');
   try {
     const result = fn();
-    db.exec('COMMIT');
+    database.exec('COMMIT');
     return result;
   } catch (err) {
-    db.exec('ROLLBACK');
+    database.exec('ROLLBACK');
     throw err;
   }
-}
-
-// ---------- Dados iniciais (só na primeira execução) ----------
-const DEFAULT_SETTINGS = {
-  shop_name: 'Estúdio de Unhas Exemplo',
-  about: 'Esmaltação em gel, alongamento e nail art com acabamento impecável, e aquele café enquanto você espera.',
-  address: 'Rua Augusta, 1500 - Consolação, São Paulo - SP',
-  phone: '(11) 99999-0000',
-  whatsapp: '5511999990000',
-  instagram: '',
-  slot_step: '15',        // intervalo entre horários oferecidos (min)
-  min_advance_min: '60',  // antecedência mínima para o cliente agendar (min)
-  max_days_ahead: '30',   // até quantos dias à frente o cliente pode agendar
-  cancel_advance_min: '120', // antecedência mínima para o cliente cancelar online (min)
-};
-
-for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
-  db.prepare('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)').run(k, v);
-}
-if (!getSettings().admin_password) {
-  setSetting('admin_password', hashPassword(process.env.ADMIN_PASSWORD || 'admin123'));
-}
-
-if (db.prepare('SELECT COUNT(*) n FROM services').get().n === 0) {
-  tx(() => {
-    const ins = db.prepare('INSERT INTO services(name, description, price_cents, duration_min, sort) VALUES (?, ?, ?, ?, ?)');
-    [
-      ['Manicure', 'Cutilagem, lixamento e esmaltação', 3500, 30],
-      ['Pedicure', 'Cutilagem, esfoliação e esmaltação', 4000, 30],
-      ['Mão + Pé', 'Manicure e pedicure completas', 7000, 60],
-      ['Nail art', 'Decoração em até 2 unhas: desenho, pedraria ou foil', 2000, 15],
-      ['Spa das mãos', 'Esfoliação e hidratação profunda', 2500, 15],
-      ['Esmaltação em gel', 'Brilho e duração de até 3 semanas', 8000, 60],
-      ['Alongamento em gel', 'Unhas alongadas no molde F1, com esmaltação', 16000, 120],
-    ].forEach((s, i) => ins.run(...s, i));
-
-    const insB = db.prepare('INSERT INTO pros(name) VALUES (?)');
-    const insH = db.prepare('INSERT INTO working_hours VALUES (?, ?, ?, ?, ?, ?)');
-    for (const name of ['Juliana', 'Camila']) {
-      const id = Number(insB.run(name).lastInsertRowid);
-      for (const wd of [2, 3, 4, 5]) insH.run(id, wd, 9 * 60, 19 * 60, 12 * 60, 13 * 60); // ter-sex 09-19
-      insH.run(id, 6, 8 * 60, 17 * 60, 12 * 60, 13 * 60);                                  // sáb 08-17
-    }
-  });
 }

@@ -1,4 +1,4 @@
-// Funções compartilhadas entre o site do cliente e o painel do dono
+// Funções compartilhadas entre as páginas do nAIls (agendamento, painel, cadastro)
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
@@ -42,7 +42,11 @@ function toast(msg, type = '') {
   toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
 }
 
+// Na página de um salão (/s/<slug>), as chamadas /api/... vão para /api/s/<slug>/...
+const SALON_SLUG = (/^\/s\/([a-z0-9-]+)/.exec(location.pathname) || [])[1] || null;
+
 async function http(method, url, body, token) {
+  if (SALON_SLUG && url.startsWith('/api/') && !url.startsWith('/api/admin/')) url = `/api/s/${SALON_SLUG}${url.slice(4)}`;
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers.Authorization = `Bearer ${token}`;

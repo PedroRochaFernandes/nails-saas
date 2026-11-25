@@ -1,10 +1,12 @@
-// Servidor HTTP + API REST do estúdio de unhas (sem dependências externas)
+// nAIls: servidor HTTP + API REST do SaaS de agendamento para nail designers (sem dependências externas)
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes, randomInt } from 'node:crypto';
-import { db, getSettings, setSetting, verifyPassword, hashPassword, tx } from './db.js';
+import { randomBytes, randomInt, createHash } from 'node:crypto';
+import { db, platform, runAsSalon, initSalonDb, getSettings, setSetting, verifyPassword, hashPassword, tx } from './db.js';
+import { PLANS, TRIAL_DAYS, BILLING_MODE, BillingError, salonAccess, maxProsFor,
+  startCheckout, billingPortal, cancelDemo, syncCheckout, verifyWebhook, handleWebhookEvent } from './billing.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const PORT = Number(process.env.PORT) || 3000;
@@ -271,27 +273,63 @@ function findByCodeAndPhone(code, phone) {
   return fail('Agendamento não encontrado. Confira o código e o telefone.', 404);
 }
 
-// ---------------------------------------------------------------- sessões do admin
-const sessions = new Map(); // token -> expira em (ms)
+// ---------------------------------------------------------------- contas e sessões
 const loginFails = new Map(); // ip -> { n, until }
-const SESSION_MS = 12 * 60 * 60 * 1000;
+const signups = new Map();    // ip -> [instantes] (limita cadastros em massa)
+const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
+const sha256 = v => createHash('sha256').update(String(v)).digest('hex');
+const bearer = req => (req.headers.authorization || '').replace(/^Bearer /, '');
+const getSalon = id => platform.prepare('SELECT * FROM salons WHERE id = ?').get(id);
 
-function requireAdmin(req) {
-  const token = (req.headers.authorization || '').replace(/^Bearer /, '');
-  const exp = sessions.get(token);
-  if (!exp || exp < Date.now()) { sessions.delete(token); fail('Sessão expirada. Entre novamente.', 401); }
+function createSession(userId) {
+  const token = randomBytes(32).toString('hex');
+  platform.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
+  platform.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(sha256(token), userId, Date.now() + SESSION_MS);
+  return token;
 }
+
+/** Usuária logada e o salão dela, a partir do token. */
+function requireAdmin(req) {
+  const row = platform.prepare(`SELECT u.*, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id
+                                WHERE s.token_hash = ?`).get(sha256(bearer(req)));
+  if (!row || row.expires_at < Date.now()) fail('Sessão expirada. Entre novamente.', 401);
+  return { user: row, salon: getSalon(row.salon_id) };
+}
+
+function checkLoginRate(ip) {
+  const f = loginFails.get(ip);
+  if (f && f.n >= 10 && f.until > Date.now()) fail('Muitas tentativas. Aguarde 15 minutos.', 429);
+}
+function loginFailed(ip) {
+  const f = loginFails.get(ip);
+  loginFails.set(ip, { n: (f && f.until > Date.now() ? f.n : 0) + 1, until: Date.now() + 15 * 60000 });
+}
+
+/** "Studio da Ana Paula" -> "studio-da-ana-paula" (sem repetir endereço de outro salão) */
+function uniqueSlug(name) {
+  const base = String(name).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'salao';
+  for (let i = 1; ; i++) {
+    const slug = i === 1 ? base : `${base}-${i}`;
+    if (!platform.prepare('SELECT 1 FROM salons WHERE slug = ?').get(slug)) return slug;
+  }
+}
+
+const isEmail = e => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e);
 
 // ---------------------------------------------------------------- rotas
 const routes = [];
-function route(method, pattern, handler, { admin = false } = {}) {
+// scope: 'salon'    = página pública de um salão (/api/s/<slug>/...)
+//        'admin'    = painel (salão da usuária logada)
+//        'platform' = cadastro, login, planos (sem salão)
+function route(method, pattern, handler, { admin = false, scope = admin ? 'admin' : 'salon' } = {}) {
   const keys = [];
   const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
-  routes.push({ method, re, keys, handler, admin });
+  routes.push({ method, re, keys, handler, scope });
 }
 
 // ----- público
-route('GET', '/api/info', () => {
+route('GET', '/api/info', ({ salon }) => {
   const s = getSettings();
   const settings = Object.fromEntries(PUBLIC_SETTINGS.map(k => [k, s[k] ?? '']));
   const services = db.prepare('SELECT id, name, description, price_cents, duration_min FROM services WHERE active = 1 ORDER BY sort, id').all();
@@ -305,7 +343,7 @@ route('GET', '/api/info', () => {
                           WHERE b.active = 1 AND h.weekday = ?`).get(wd);
     return r.o == null ? null : { open: toHHMM(r.o), close: toHHMM(r.c) };
   });
-  return { settings, services, pros, hours, today: localDate() };
+  return { settings, services, pros, hours, today: localDate(), online: salonAccess(salon).online };
 });
 
 route('GET', '/api/availability', ({ query }) => {
@@ -315,9 +353,11 @@ route('GET', '/api/availability', ({ query }) => {
   return { slots: availability(date, service, proId) };
 });
 
-route('POST', '/api/appointments', ({ body }) => createAppointment(body));
+// Sem assinatura (teste encerrado ou cancelada), a página continua no ar, mas não aceita agendamentos
+const requireOnline = salon => salonAccess(salon).online || fail('A agenda online deste estúdio está pausada. Fale com o estúdio pelo WhatsApp.', 403);
+route('POST', '/api/appointments', ({ body, salon }) => { requireOnline(salon); return createAppointment(body); });
 
-route('POST', '/api/waitlist', ({ body }) => joinWaitlist(body));
+route('POST', '/api/waitlist', ({ body, salon }) => { requireOnline(salon); return joinWaitlist(body); });
 
 route('POST', '/api/appointments/lookup', ({ body }) => {
   const { appt, wait } = findByCodeAndPhone(body.code, body.phone);
@@ -361,32 +401,90 @@ route('POST', '/api/appointments/cancel', ({ body }) => {
   };
 });
 
-// ----- admin: login
-route('POST', '/api/admin/login', ({ body, req }) => {
+// ----- plataforma: planos, cadastro e login
+route('GET', '/api/platform/plans', () => ({ plans: PLANS, trialDays: TRIAL_DAYS, billingMode: BILLING_MODE }), { scope: 'platform' });
+
+route('POST', '/api/platform/signup', ({ body, req }) => {
   const ip = req.socket.remoteAddress;
-  const f = loginFails.get(ip);
-  if (f && f.n >= 10 && f.until > Date.now()) fail('Muitas tentativas. Aguarde 15 minutos.', 429);
-  if (!verifyPassword(body.password, getSettings().admin_password)) {
-    const n = (f && f.until > Date.now() ? f.n : 0) + 1;
-    loginFails.set(ip, { n, until: Date.now() + 15 * 60000 });
-    fail('Senha incorreta', 401);
+  const recent = (signups.get(ip) || []).filter(t => t > Date.now() - 3600_000);
+  if (recent.length >= 5) fail('Muitos cadastros seguidos. Tente de novo em uma hora.', 429);
+
+  const salonName = str(body.salonName, 60);
+  const name = str(body.name, 80);
+  const email = str(body.email, 120).toLowerCase();
+  const password = String(body.password || '');
+  const whatsapp = digits(body.whatsapp);
+  if (salonName.length < 2) fail('Informe o nome do seu estúdio');
+  if (name.length < 2) fail('Informe seu nome');
+  if (!isEmail(email)) fail('E-mail inválido');
+  if (password.length < 8) fail('A senha precisa ter pelo menos 8 caracteres');
+  if (whatsapp && (whatsapp.length < 10 || whatsapp.length > 13)) fail('WhatsApp inválido: use DDD + número');
+  if (platform.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) fail('Já existe uma conta com este e-mail. Entre com ela.', 409);
+  const plan = PLANS[body.plan] ? body.plan : 'profissional';
+
+  const { salonId, userId, slug } = tx(() => {
+    const slug = uniqueSlug(salonName);
+    const salonId = Number(platform.prepare('INSERT INTO salons (slug, name, plan, status, trial_ends_at) VALUES (?, ?, ?, ?, ?)')
+      .run(slug, salonName, plan, 'trialing', new Date(Date.now() + TRIAL_DAYS * 86_400_000).toISOString()).lastInsertRowid);
+    const userId = Number(platform.prepare('INSERT INTO users (salon_id, name, email, password_hash) VALUES (?, ?, ?, ?)')
+      .run(salonId, name, email, hashPassword(password)).lastInsertRowid);
+    return { salonId, userId, slug };
+  }, platform);
+  initSalonDb(salonId, { shopName: salonName, ownerName: firstName(name), whatsapp });
+  signups.set(ip, [...recent, Date.now()]);
+  return { token: createSession(userId), slug };
+}, { scope: 'platform' });
+
+route('POST', '/api/platform/login', ({ body, req }) => {
+  const ip = req.socket.remoteAddress;
+  checkLoginRate(ip);
+  const user = platform.prepare('SELECT * FROM users WHERE email = ?').get(str(body.email, 120).toLowerCase());
+  if (!user || !verifyPassword(body.password, user.password_hash)) {
+    loginFailed(ip);
+    fail('E-mail ou senha incorretos', 401);
   }
   loginFails.delete(ip);
-  const token = randomBytes(32).toString('hex');
-  sessions.set(token, Date.now() + SESSION_MS);
-  return { token };
-});
+  return { token: createSession(user.id) };
+}, { scope: 'platform' });
 
+// ----- painel: conta e assinatura
 route('POST', '/api/admin/logout', ({ req }) => {
-  sessions.delete((req.headers.authorization || '').replace(/^Bearer /, ''));
+  platform.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(bearer(req)));
   return { ok: true };
 }, { admin: true });
 
-route('POST', '/api/admin/password', ({ body }) => {
-  if (!verifyPassword(body.current, getSettings().admin_password)) fail('Senha atual incorreta');
-  if (String(body.next || '').length < 6) fail('A nova senha precisa ter ao menos 6 caracteres');
-  setSetting('admin_password', hashPassword(String(body.next)));
+route('POST', '/api/admin/password', ({ body, user, req }) => {
+  if (!verifyPassword(body.current, user.password_hash)) fail('Senha atual incorreta');
+  if (String(body.next || '').length < 8) fail('A nova senha precisa ter pelo menos 8 caracteres');
+  platform.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(String(body.next)), user.id);
+  // encerra as outras sessões: quem tinha a senha antiga não continua logado
+  platform.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(user.id, sha256(bearer(req)));
   return { ok: true };
+}, { admin: true });
+
+function accountView(user, salon) {
+  const access = salonAccess(salon);
+  return {
+    user: { name: user.name, email: user.email },
+    salon: {
+      name: salon.name, slug: salon.slug, plan: salon.plan, planName: PLANS[salon.plan]?.name || salon.plan,
+      status: salon.status, statusLabel: access.label, online: access.online, trialDaysLeft: access.trialDaysLeft,
+      trialEndsAt: salon.trial_ends_at, currentPeriodEnd: salon.current_period_end,
+      hasBilling: !!salon.stripe_customer_id, maxPros: maxProsFor(salon),
+    },
+    plans: PLANS, billingMode: BILLING_MODE,
+  };
+}
+route('GET', '/api/admin/account', ({ user, salon }) => accountView(user, salon), { admin: true });
+
+const originOf = req => String(req.headers.origin || `http://${req.headers.host}`);
+route('POST', '/api/admin/billing/checkout', async ({ body, user, salon, req }) =>
+  startCheckout(salon, user, String(body.plan || ''), originOf(req)), { admin: true });
+route('POST', '/api/admin/billing/portal', ({ salon, req }) => billingPortal(salon, originOf(req)), { admin: true });
+route('POST', '/api/admin/billing/cancel', ({ salon }) => { cancelDemo(salon); return { ok: true }; }, { admin: true });
+route('POST', '/api/admin/billing/sync', async ({ body, user, salon }) => {
+  await syncCheckout(salon, body.sessionId);
+  return accountView(user, getSalon(salon.id));
 }, { admin: true });
 
 // ----- admin: agenda
@@ -406,7 +504,7 @@ route('GET', '/api/admin/availability', ({ query }) => {
 
 route('POST', '/api/admin/appointments', ({ body }) => createAppointment(body, { admin: true }), { admin: true });
 
-route('PATCH', '/api/admin/appointments/:id', ({ params, body, req }) => {
+route('PATCH', '/api/admin/appointments/:id', ({ params, body, req, salon }) => {
   if (!STATUSES.includes(body.status)) fail('Status inválido');
   const a = getAppointment(Number(params.id)) || fail('Não encontrado', 404);
   if (a.status === body.status) return apptView(a);
@@ -417,7 +515,7 @@ route('PATCH', '/api/admin/appointments/:id', ({ params, body, req }) => {
     const taken = cancelAppointment(a, { reason, by: 'estudio' });
     const s = getSettings();
     const origin = String(req.headers.origin || `http://${req.headers.host}`);
-    const site = /\/\/(localhost|127\.|\[::1\])/.test(origin) ? '' : `${origin}/#agendar`; // link local não serve ao cliente
+    const site = /\/\/(localhost|127\.|\[::1\])/.test(origin) ? '' : `${origin}/s/${salon.slug}#agendar`; // link local não serve ao cliente
     const text = [
       `Olá, ${firstName(a.customer_name)}! Aqui é da ${s.shop_name}.`,
       `Infelizmente precisamos cancelar o seu horário de ${a.service_name} com ${a.pro_name}, ${fmtWhen(a.date, a.start_min)}.`,
@@ -537,17 +635,29 @@ function proWhatsapp(v) {
 }
 route('GET', '/api/admin/pros', () =>
   db.prepare('SELECT * FROM pros ORDER BY name').all().map(proWithHours), { admin: true });
-route('POST', '/api/admin/pros', ({ body }) => tx(() => {
+/** Barra uma profissional ativa a mais do que o plano permite. */
+function checkProLimit(salon, exceptId = null) {
+  const max = maxProsFor(salon);
+  if (max == null) return;
+  const n = db.prepare('SELECT COUNT(*) n FROM pros WHERE active = 1 AND id != ?').get(exceptId ?? -1).n;
+  if (n >= max) {
+    fail(`O plano ${PLANS[salon.plan]?.name} permite até ${max} profissional${max > 1 ? 'is' : ''} ativa${max > 1 ? 's' : ''}. `
+      + 'Mude de plano na aba Assinatura.', 403);
+  }
+}
+route('POST', '/api/admin/pros', ({ body, salon }) => tx(() => {
+  if (body.active !== false) checkProLimit(salon);
   const name = str(body.name, 60) || fail('Nome obrigatório');
   const id = Number(db.prepare('INSERT INTO pros(name, active, whatsapp) VALUES (?, ?, ?)')
     .run(name, body.active === false ? 0 : 1, proWhatsapp(body.whatsapp)).lastInsertRowid);
   saveHours(id, body.hours);
   return proWithHours(db.prepare('SELECT * FROM pros WHERE id = ?').get(id));
 }), { admin: true });
-route('PUT', '/api/admin/pros/:id', ({ params, body }) => {
+route('PUT', '/api/admin/pros/:id', ({ params, body, salon }) => {
   const saved = tx(() => {
     const id = Number(params.id);
-    db.prepare('SELECT 1 FROM pros WHERE id = ?').get(id) || fail('Não encontrado', 404);
+    const current = db.prepare('SELECT * FROM pros WHERE id = ?').get(id) || fail('Não encontrado', 404);
+    if (body.active !== false && !current.active) checkProLimit(salon, id); // reativando
     const name = str(body.name, 60) || fail('Nome obrigatório');
     db.prepare('UPDATE pros SET name = ?, active = ?, whatsapp = ? WHERE id = ?')
       .run(name, body.active === false ? 0 : 1, proWhatsapp(body.whatsapp), id);
@@ -599,7 +709,7 @@ route('GET', '/api/admin/settings', () => {
   const s = getSettings();
   return Object.fromEntries(PUBLIC_SETTINGS.map(k => [k, s[k] ?? '']));
 }, { admin: true });
-route('PUT', '/api/admin/settings', ({ body }) => {
+route('PUT', '/api/admin/settings', ({ body, salon }) => {
   const numeric = { slot_step: [5, 120], min_advance_min: [0, 10080], max_days_ahead: [1, 365], cancel_advance_min: [0, 10080] };
   tx(() => {
     for (const k of PUBLIC_SETTINGS) {
@@ -609,6 +719,8 @@ route('PUT', '/api/admin/settings', ({ body }) => {
       else setSetting(k, str(body[k], k === 'about' ? 600 : 200));
     }
   });
+  const name = getSettings().shop_name;
+  if (name) platform.prepare('UPDATE salons SET name = ? WHERE id = ?').run(name, salon.id);
   return { ok: true };
 }, { admin: true });
 
@@ -623,20 +735,27 @@ function send(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-async function readBody(req) {
+async function readRaw(req) {
   let size = 0; const chunks = [];
   for await (const c of req) {
     size += c.length;
-    if (size > 100_000) fail('Requisição muito grande', 413);
+    if (size > 500_000) fail('Requisição muito grande', 413);
     chunks.push(c);
   }
-  if (!chunks.length) return {};
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { fail('JSON inválido'); }
+  return Buffer.concat(chunks).toString('utf8');
+}
+async function readBody(req) {
+  const raw = await readRaw(req);
+  if (!raw) return {};
+  try { return JSON.parse(raw); } catch { fail('JSON inválido'); }
 }
 
+// Páginas com endereço "bonito". /s/<slug> é a página de agendamento de cada salão.
+const PAGES = { '/': '/landing.html', '/cadastro': '/cadastro.html', '/entrar': '/entrar.html', '/painel': '/admin.html' };
 async function serveStatic(pathname, res) {
-  if (pathname === '/') pathname = '/index.html';
-  if (pathname === '/admin') pathname = '/admin.html';
+  if (pathname === '/admin') { res.writeHead(301, { Location: '/painel' }).end(); return; }
+  if (/^\/s\/[a-z0-9-]+\/?$/.test(pathname)) pathname = '/index.html';
+  else pathname = PAGES[pathname.replace(/\/$/, '') || '/'] || pathname;
   const file = path.join(PUBLIC_DIR, path.normalize(decodeURIComponent(pathname)));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403).end(); return; }
   try {
@@ -653,23 +772,49 @@ const server = http.createServer(async (req, res) => {
   try {
     if (!url.pathname.startsWith('/api/')) return await serveStatic(url.pathname, res);
 
+    // Eventos do Stripe: o corpo precisa chegar intacto para conferir a assinatura
+    if (url.pathname === '/api/billing/webhook' && req.method === 'POST') {
+      let event;
+      try { event = verifyWebhook(await readRaw(req), req.headers['stripe-signature']); } catch (err) {
+        if (err instanceof BillingError) fail(err.message, 400);
+        throw err;
+      }
+      await handleWebhookEvent(event);
+      return send(res, 200, { received: true });
+    }
+
+    // /api/s/<slug>/info -> rota /api/info do salão <slug>
+    let pathname = url.pathname, salon = null;
+    const bySlug = /^\/api\/s\/([a-z0-9-]+)(\/.*)$/.exec(pathname);
+    if (bySlug) {
+      salon = platform.prepare('SELECT * FROM salons WHERE slug = ?').get(bySlug[1]) || fail('Estúdio não encontrado', 404);
+      pathname = '/api' + bySlug[2];
+    }
+
     let match = null, r = null;
     for (r of routes) {
-      if (r.method === req.method && (match = r.re.exec(url.pathname))) break;
+      if (r.method === req.method && (match = r.re.exec(pathname))) break;
     }
-    if (!match) fail('Rota não encontrada', 404);
-    if (r.admin) requireAdmin(req);
-    const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(match[i + 1])]));
-    const body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readBody(req) : {};
-    send(res, 200, await r.handler({ req, params, query: url.searchParams, body }));
+    if (!match || (r.scope === 'salon') !== !!salon) fail('Rota não encontrada', 404);
+
+    const ctx = { req, query: url.searchParams, salon, user: null };
+    if (r.scope === 'admin') Object.assign(ctx, requireAdmin(req));
+    ctx.params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(match[i + 1])]));
+    ctx.body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readBody(req) : {};
+
+    const result = ctx.salon
+      ? await runAsSalon(ctx.salon.id, () => r.handler(ctx))
+      : await r.handler(ctx);
+    send(res, 200, result);
   } catch (err) {
     if (err instanceof HttpError) return send(res, err.status, { error: err.message });
+    if (err instanceof BillingError) return send(res, 502, { error: err.message });
     console.error(err);
     send(res, 500, { error: 'Erro interno no servidor' });
   }
 });
 
 server.listen(PORT, () => {
-  console.log(`\n  💅 Estúdio rodando em http://localhost:${PORT}`);
-  console.log(`  🔐 Painel do estúdio:  http://localhost:${PORT}/admin  (senha inicial: admin123)\n`);
+  console.log(`\n  💅 nAIls rodando em http://localhost:${PORT}`);
+  console.log(`  💳 Cobrança: ${BILLING_MODE === 'stripe' ? 'Stripe' : 'modo demonstração (sem STRIPE_SECRET_KEY)'}\n`);
 });

@@ -6,14 +6,14 @@
   <title>Estúdio de unhas — Agendamento online</title>
   <meta name="description" content="Agende manicure, pedicure, gel e alongamento online em poucos cliques.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2309090b'/><rect x='13' y='4' width='6' height='9' rx='1.5' fill='%23f6f1f4'/><rect x='11.5' y='12' width='9' height='3' rx='1' fill='%23f6f1f4'/><rect x='8.5' y='15' width='15' height='14' rx='4.5' fill='%23ff4f97'/></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 40'><rect x='-4' y='0' width='40' height='40' rx='9' fill='%2307070a'/><g fill='none' stroke='%238b5cf6' stroke-width='3' stroke-linecap='round'><path d='M5 38V14a11 11 0 0 1 22 0v24'/><path d='M16 6c4.2 0 6 4.6 6 9v6.5a6 6 0 0 1-12 0V15c0-4.4 1.8-9 6-9z'/></g></svg>">
 </head>
 <body>
   <nav class="nav">
     <div class="container">
-      <a class="brand" href="#"><svg class="brand-mark" width="14" height="26" viewBox="0 0 14 26" aria-hidden="true"><rect x="4.5" y="0" width="5" height="9" rx="1.5" fill="#f6f1f4"/><rect x="3" y="8.5" width="8" height="2.5" rx="1" fill="#f6f1f4"/><rect x="0.5" y="11" width="13" height="15" rx="4" fill="#ff4f97"/><rect x="3" y="14" width="2" height="8" rx="1" fill="#ffffff" opacity=".5"/></svg><span data-bind="shop_name">Estúdio de unhas</span></a>
+      <a class="brand" href="#"><svg class="nails-mark" width="20" height="25" viewBox="0 0 32 40" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 38V14a11 11 0 0 1 22 0v24"/><path d="M16 6c4.2 0 6 4.6 6 9v6.5a6 6 0 0 1-12 0V15c0-4.4 1.8-9 6-9z"/></svg><span data-bind="shop_name">Estúdio de unhas</span></a>
       <div class="nav-links">
         <a href="#servicos">Serviços</a>
         <a href="#localizacao">Localização</a>
@@ -26,6 +26,7 @@
   <header class="hero">
     <div class="container">
       <span class="badge-open" id="open-badge">Carregando…</span>
+      <p class="paused-banner hidden" id="paused">A agenda online deste estúdio está pausada no momento. Fale com o estúdio pelo WhatsApp para marcar seu horário.</p>
       <h1 data-bind="shop_name">Estúdio de unhas</h1>
       <p data-bind="about"></p>
       <div class="actions">
@@ -155,7 +156,7 @@
   <footer>
     <div class="container">
       <span>© <span id="year"></span> <span data-bind="shop_name"></span></span>
-      <a href="/admin" class="muted">Área da profissional</a>
+      <a class="powered" href="/" target="_blank" rel="noopener">Agendamento por <span class="wordmark" style="font-size:1rem">n<b>AI</b>ls</span></a>
     </div>
   </footer>
 
