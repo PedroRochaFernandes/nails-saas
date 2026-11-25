@@ -41,7 +41,93 @@ async function start() {
   if (params.get('checkout')) syncCheckout(params.get('checkout'));
   if (params.has('bemvinda') || params.has('checkout')) history.replaceState(null, '', '/painel' + location.hash);
   if (location.hash === '#assinatura') openTab('assinatura');
+  loadAgents();
 }
+
+// ------------------------------------------------------------- agentes de IA
+const confBadge = a => a.status !== 'confirmed' ? ''
+  : a.confirmation === 'confirmed' ? ' <span class="conf confirmed">✓ confirmou</span>'
+  : a.confirmation === 'pending' ? ' <span class="conf pending">aguardando confirmação</span>' : '';
+
+const KIND_LABEL = { vespera: 'Lembrete da véspera', '2h': 'Aviso 2h antes', vaga: 'Vaga da fila de espera' };
+const EVENT_ICON = { confirmed: '✅', declined: '❌', reschedule: '🔁', question: '💬', failed: '⚠️' };
+let agents = null;
+
+async function loadAgents() {
+  try { agents = await api('GET', '/api/admin/agentes'); } catch { return; }
+  renderAgents();
+}
+
+function renderAgents() {
+  const a = agents, el = $('#agent-reminders');
+  if (!a.allowed) {
+    el.innerHTML = `<h3>Lembretes e confirmações <span class="pill off">Indisponível no seu plano</span></h3>
+      <p class="muted">O agente lembra as clientes na véspera e 2 horas antes, pede confirmação e libera o horário para a fila de espera se alguém desmarcar.
+      Ele faz parte dos planos Profissional e Studio${account?.salon.online ? '' : ', com a assinatura em dia'}.</p>
+      <button class="btn btn-primary btn-sm" data-goto="assinatura">Ver planos</button>`;
+    el.querySelector('[data-goto]').addEventListener('click', () => openTab('assinatura'));
+    return;
+  }
+  const s = a.settings, on = s.enabled || s.twoHours;
+  const hours = Array.from({ length: 13 }, (_, i) => `${String(8 + i).padStart(2, '0')}:00`);
+  const stat = (label, c) => `<div class="card"><span class="muted small">${label}</span><br>
+    <b>${c.confirmed}</b> confirmaram · <b>${c.pending}</b> aguardando${c.none ? ` · <b>${c.none}</b> sem lembrete ainda` : ''}</div>`;
+  const fmtTime = iso => new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+  el.innerHTML = `
+    <h3>Lembretes e confirmações <span class="pill ${on ? 'on' : 'off'}">${on ? 'Ativo' : 'Desligado'}</span></h3>
+    <div class="agent-meta">
+      <span>Envio: <b>${a.channel === 'whatsapp' ? 'automático pelo WhatsApp' : 'com um toque'}</b>
+        ${a.channel === 'whatsapp' ? '· as respostas das clientes são entendidas pelo agente' : '· o agente prepara as mensagens e você envia pelo seu WhatsApp'}</span>
+      <span>Mensagens: <b>${a.ai ? 'escritas pela IA' : 'texto padrão'}</b> · cada cliente recebe um link para confirmar ou desmarcar</span>
+    </div>
+    <form class="agent-form" id="agent-form">
+      <label class="check"><input type="checkbox" name="enabled" ${s.enabled ? 'checked' : ''}> Lembrete na véspera às</label>
+      <div class="field"><select name="hour" aria-label="Horário do lembrete da véspera">${hours.map(h => `<option ${h === s.hour ? 'selected' : ''}>${h}</option>`).join('')}</select></div>
+      <label class="check"><input type="checkbox" name="twoHours" ${s.twoHours ? 'checked' : ''}> Aviso 2 horas antes</label>
+      <button class="btn btn-sm" type="button" id="agent-run" style="margin-left:auto">Verificar agora</button>
+    </form>
+    <div class="confirm-stats">${stat('Hoje', a.today)}${stat('Amanhã', a.tomorrow)}</div>
+
+    <h3 style="margin-top:8px">Para enviar ${a.queue.length ? `<span class="tag">${a.queue.length}</span>` : ''}</h3>
+    ${a.queue.length ? a.queue.map(q => `
+      <div class="queue-item">
+        <div><strong>${esc(q.customerName)}</strong> <span class="muted small">· ${KIND_LABEL[q.kind]} · ${esc(q.serviceName)}, ${fmtDate(q.date, { day: '2-digit', month: '2-digit' })} às ${q.start}${q.ai ? ' · escrita pela IA' : ''}</span>
+          ${q.error ? `<div class="small cancel-why">Envio automático falhou: ${esc(q.error)}</div>` : ''}
+          <pre>${esc(q.message)}</pre></div>
+        <a class="btn btn-primary btn-sm" href="${q.url}" target="_blank" rel="noopener" data-sent="${q.id}">Enviar no WhatsApp</a>
+      </div>`).join('') : `<p class="muted small">${a.channel === 'whatsapp' ? 'Os lembretes estão saindo sozinhos pelo WhatsApp.' : 'Nada para enviar agora. Os lembretes aparecem aqui na hora certa.'}</p>`}
+
+    <h3 style="margin-top:24px">Atividade do agente</h3>
+    ${a.events.length ? `<ul class="events">${a.events.map(e => `<li><time>${fmtTime(e.created_at)}</time><span>${EVENT_ICON[e.kind] || '•'} ${esc(e.detail)}</span></li>`).join('')}</ul>`
+      : '<p class="muted small">Quando as clientes confirmarem, desmarcarem ou responderem, aparece aqui.</p>'}`;
+
+  $('#agent-form').addEventListener('change', async ev => {
+    const f = ev.currentTarget;
+    try {
+      agents.settings = await api('PUT', '/api/admin/agentes/lembretes', {
+        enabled: f.enabled.checked, twoHours: f.twoHours.checked, hour: f.hour.value });
+      toast('Agente atualizado', 'ok');
+      renderAgents();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+  $('#agent-run').addEventListener('click', async ev => {
+    ev.target.disabled = true;
+    try {
+      agents = await api('POST', '/api/admin/agentes/rodar');
+      toast(agents.created ? `${agents.created} lembrete(s) criado(s)` : 'Nenhum lembrete devido agora', 'ok');
+      renderAgents();
+      loadAgenda();
+    } catch (e) { toast(e.message, 'error'); ev.target.disabled = false; }
+  });
+  $$('[data-sent]').forEach(b => b.addEventListener('click', () => {
+    // abriu o WhatsApp com a mensagem pronta: tira da lista
+    api('POST', `/api/admin/agentes/lembretes/${b.dataset.sent}/enviado`).then(loadAgents).catch(() => {});
+  }));
+}
+
+// a lista de lembretes muda com o tempo: atualiza ao abrir a aba
+$('[data-tab="agentes"]').addEventListener('click', loadAgents);
 
 // ------------------------------------------------------------- abas
 function openTab(name) {
@@ -177,7 +263,7 @@ async function loadAgenda() {
     <div class="appt ${a.status}">
       <div class="time">${a.start}<div class="muted small" style="font-weight:400">${a.end}</div></div>
       <div>
-        <strong>${esc(a.customerName)}</strong>${a.fromWaitlist ? ' <span class="tag">veio da fila de espera</span>' : ''}
+        <strong>${esc(a.customerName)}</strong>${a.fromWaitlist ? ' <span class="tag">veio da fila de espera</span>' : ''}${confBadge(a)}
         <a class="small" href="https://wa.me/${waNumber(a.customerPhone)}" target="_blank" rel="noopener">${fmtPhone(a.customerPhone)}</a><br>
         <span class="muted small">${esc(a.serviceName)} · ${esc(a.proName)} · ${money(a.priceCents)} · cód. ${a.code}</span>
         ${a.notes ? `<div class="small muted" style="margin-top:4px">Obs.: ${esc(a.notes)}</div>` : ''}

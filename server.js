@@ -5,8 +5,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomInt, createHash } from 'node:crypto';
 import { db, platform, runAsSalon, initSalonDb, getSettings, setSetting, verifyPassword, hashPassword, tx } from './db.js';
-import { PLANS, TRIAL_DAYS, BILLING_MODE, BillingError, salonAccess, maxProsFor,
+import { PLANS, TRIAL_DAYS, BILLING_MODE, BillingError, salonAccess, maxProsFor, agentsAllowed,
   startCheckout, billingPortal, cancelDemo, syncCheckout, verifyWebhook, handleWebhookEvent } from './billing.js';
+import { initReminders, startReminderScheduler, runSalon, panelData, saveReminderSettings, markSent,
+  confirmationInfo, confirmationAction, handleInbound } from './agents/lembretes.js';
+import { whatsappEnabled, verifySignature, verifyChallenge, parseInbound } from './agents/whatsapp.js';
+import { aiEnabled } from './agents/ia.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const PORT = Number(process.env.PORT) || 3000;
@@ -141,6 +145,7 @@ function apptView(a) {
     customerName: a.customer_name, customerPhone: a.customer_phone, notes: a.notes,
     priceCents: a.price_cents, status: a.status, fromWaitlist: !!a.from_waitlist, createdAt: a.created_at,
     cancelReason: a.cancel_reason || '', cancelledBy: a.cancelled_by || null, cancelledAt: a.cancelled_at || null,
+    confirmation: a.confirmation || '', // agente de lembretes: '' | pending | confirmed
   };
 }
 
@@ -487,6 +492,22 @@ route('POST', '/api/admin/billing/sync', async ({ body, user, salon }) => {
   return accountView(user, getSalon(salon.id));
 }, { admin: true });
 
+// ----- agente de lembretes
+// Link pessoal da cliente (/c/<token>): confirmar ou desmarcar sem login
+route('GET', '/api/confirmar/:token', ({ params }) => confirmationInfo(params.token), { scope: 'platform' });
+route('POST', '/api/confirmar/:token', ({ params, body }) => confirmationAction(params.token, body.action, body.reason), { scope: 'platform' });
+
+route('GET', '/api/admin/agentes', ({ salon }) => panelData(salon), { admin: true });
+route('PUT', '/api/admin/agentes/lembretes', ({ body }) => saveReminderSettings(body), { admin: true });
+route('POST', '/api/admin/agentes/lembretes/:id/enviado', ({ params, salon }) => markSent(salon, params.id), { admin: true });
+route('POST', '/api/admin/agentes/rodar', async ({ salon, body }) => {
+  if (!agentsAllowed(salon)) fail('O agente de lembretes está nos planos Profissional e Studio.', 403);
+  // NAILS_TEST_CLOCK=1 (só em testes): simula outro instante, para testar véspera e 2h antes sem esperar
+  const now = process.env.NAILS_TEST_CLOCK === '1' && body.now ? new Date(body.now) : new Date();
+  const created = await runSalon(salon, now);
+  return { created, ...panelData(salon) };
+}, { admin: true });
+
 // ----- admin: agenda
 route('GET', '/api/admin/appointments', ({ query }) => {
   const from = isDate(query.get('from')) ? query.get('from') : localDate();
@@ -755,6 +776,7 @@ const PAGES = { '/': '/landing.html', '/cadastro': '/cadastro.html', '/entrar': 
 async function serveStatic(pathname, res) {
   if (pathname === '/admin') { res.writeHead(301, { Location: '/painel' }).end(); return; }
   if (/^\/s\/[a-z0-9-]+\/?$/.test(pathname)) pathname = '/index.html';
+  else if (/^\/c\/[\w-]+\/?$/.test(pathname)) pathname = '/confirmar.html';
   else pathname = PAGES[pathname.replace(/\/$/, '') || '/'] || pathname;
   const file = path.join(PUBLIC_DIR, path.normalize(decodeURIComponent(pathname)));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403).end(); return; }
@@ -781,6 +803,26 @@ const server = http.createServer(async (req, res) => {
       }
       await handleWebhookEvent(event);
       return send(res, 200, { received: true });
+    }
+
+    // WhatsApp: validação do webhook (GET) e respostas das clientes (POST)
+    if (url.pathname === '/api/whatsapp/webhook') {
+      if (req.method === 'GET') {
+        const challenge = verifyChallenge(url.searchParams);
+        res.writeHead(challenge == null ? 403 : 200, { 'Content-Type': 'text/plain' }).end(challenge ?? 'Forbidden');
+        return;
+      }
+      if (req.method === 'POST') {
+        const raw = await readRaw(req);
+        try { verifySignature(raw, req.headers['x-hub-signature-256']); } catch (err) { fail(err.message, 401); }
+        let payload;
+        try { payload = JSON.parse(raw); } catch { fail('JSON inválido'); }
+        send(res, 200, { received: true }); // responde logo: a Meta reenvia se demorar
+        for (const msg of parseInbound(payload)) {
+          handleInbound(msg).catch(err => console.error('[whatsapp] resposta não processada:', err));
+        }
+        return;
+      }
     }
 
     // /api/s/<slug>/info -> rota /api/info do salão <slug>
@@ -814,7 +856,12 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+initReminders({ fail, cancelAppointment, getAppointment, getSalon, APPT_SELECT });
+if (process.env.NAILS_SCHEDULER !== 'off') startReminderScheduler();
+
 server.listen(PORT, () => {
   console.log(`\n  💅 nAIls rodando em http://localhost:${PORT}`);
-  console.log(`  💳 Cobrança: ${BILLING_MODE === 'stripe' ? 'Stripe' : 'modo demonstração (sem STRIPE_SECRET_KEY)'}\n`);
+  console.log(`  💳 Cobrança: ${BILLING_MODE === 'stripe' ? 'Stripe' : 'modo demonstração (sem STRIPE_SECRET_KEY)'}`);
+  console.log(`  🤖 Agente de lembretes: ${whatsappEnabled ? 'envio automático pelo WhatsApp' : 'envio com um toque pelo painel'}`
+    + ` · IA ${aiEnabled ? 'ligada' : 'desligada (mensagens padrão)'}\n`);
 });

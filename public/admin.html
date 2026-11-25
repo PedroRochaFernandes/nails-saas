@@ -60,6 +60,28 @@
     .banner { padding: 12px 16px; border-radius: 12px; margin-top: 24px; font-size: .92rem; display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
     .banner.warn { border: 1px solid rgba(255, 107, 107, .4); background: rgba(255, 107, 107, .07); }
     .banner.info { border: 1px solid rgba(167, 139, 250, .35); background: var(--accent-soft); }
+    .agent h3 { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .pill { font: 600 .72rem var(--font); padding: 2px 10px; border-radius: 99px; border: 1px solid currentColor; }
+    .pill.on { color: var(--ok); }
+    .pill.off { color: var(--muted); }
+    .agent-meta { display: grid; gap: 6px; margin: 4px 0 18px; font-size: .9rem; color: var(--muted); }
+    .agent-meta b { color: var(--text); font-weight: 600; }
+    .agent-form { display: flex; gap: 18px; align-items: end; flex-wrap: wrap; padding: 14px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .agent-form .field { margin: 0; }
+    .agent-form select { width: auto; }
+    .confirm-stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin: 18px 0; }
+    .confirm-stats .card { padding: 14px 16px; }
+    .confirm-stats b { font: 600 1.1rem var(--display); }
+    .queue-item { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; padding: 14px 0; border-top: 1px solid var(--border); }
+    .queue-item pre { white-space: pre-wrap; font: .86rem/1.5 var(--font); color: var(--muted); margin: 6px 0 0; }
+    .events { list-style: none; margin: 0; padding: 0; font-size: .88rem; }
+    .events li { padding: 9px 0; border-top: 1px solid var(--border); display: flex; gap: 10px; }
+    .events time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .agents-soon { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); margin-top: 16px; }
+    .soon-card p { margin: 8px 0 0; }
+    .conf { display: inline-block; font-size: .72rem; font-weight: 600; padding: 1px 8px; border-radius: 99px; vertical-align: 1px; margin-left: 4px; }
+    .conf.confirmed { color: var(--ok); border: 1px solid rgba(74, 222, 128, .4); }
+    .conf.pending { color: #fbbf24; border: 1px dashed rgba(251, 191, 36, .5); }
     .check { display: flex; gap: 8px; align-items: center; color: var(--text); font-size: .95rem; margin: 0; }
   </style>
 </head>
@@ -86,6 +108,7 @@
         <button class="tab" role="tab" data-tab="pros">Profissionais e expediente</button>
         <button class="tab" role="tab" data-tab="blocks">Folgas e bloqueios</button>
         <button class="tab" role="tab" data-tab="settings">Estúdio</button>
+        <button class="tab" role="tab" data-tab="agentes">Agentes IA</button>
         <button class="tab" role="tab" data-tab="assinatura">Assinatura</button>
       </div>
 
@@ -180,6 +203,17 @@
           </div>
           <button class="btn">Trocar senha</button>
         </form>
+      </section>
+
+      <!-- AGENTES DE IA -->
+      <section class="panel hidden" data-panel="agentes" style="padding:0">
+        <div class="card agent" id="agent-reminders"></div>
+        <div class="agents-soon">
+          <div class="card agent soon-card"><strong>Assistente da dona</strong> <span class="tag">Em breve</span>
+            <p class="muted small">Resumo do dia, faturamento, clientes que sumiram com mensagem para trazê-las de volta e horários fracos para promover.</p></div>
+          <div class="card agent soon-card"><strong>Conteúdo para Instagram</strong> <span class="tag">Em breve</span>
+            <p class="muted small">Legendas e ideias de posts para seus serviços e promoções relâmpago para horários vagos.</p></div>
+        </div>
       </section>
 
       <!-- ASSINATURA -->

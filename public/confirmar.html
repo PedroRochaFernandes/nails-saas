@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Confirmar horário</title>
+  <meta name="robots" content="noindex">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/landing.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 40'><rect x='-4' y='0' width='40' height='40' rx='9' fill='%2307070a'/><g fill='none' stroke='%238b5cf6' stroke-width='3' stroke-linecap='round'><path d='M5 38V14a11 11 0 0 1 22 0v24'/><path d='M16 6c4.2 0 6 4.6 6 9v6.5a6 6 0 0 1-12 0V15c0-4.4 1.8-9 6-9z'/></g></svg>">
+  <style>
+    .appt-box { border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; margin: 0 0 20px; background: var(--bg); }
+    .appt-box dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; margin: 0; }
+    .appt-box dt { color: var(--muted); font-size: .85rem; }
+    .appt-box dd { margin: 0; font-weight: 500; text-align: right; }
+    .actions-col { display: grid; gap: 10px; }
+    .state { text-align: center; padding: 8px 0 4px; }
+    .state .big { font: 600 1.3rem var(--display); margin: 8px 0 6px; }
+    .state .ico { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; margin: 0 auto; font-size: 1.6rem; }
+    .state .ok { background: rgba(74, 222, 128, .12); color: var(--ok); }
+    .state .no { background: rgba(255, 107, 107, .12); color: var(--danger); }
+    #decline-form textarea { margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <main class="auth">
+    <div class="card" id="box">
+      <p class="muted" style="text-align:center">Carregando…</p>
+    </div>
+  </main>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/common.js"></script>
+  <script>
+    const token = location.pathname.split('/')[2];
+    const box = $('#box');
+    const back = slug => `<p class="foot"><a href="/s/${esc(slug)}">Ver a página do salão</a></p>`;
+
+    function render(v) {
+      const details = `
+        <div class="appt-box"><dl>
+          <dt>Serviço</dt><dd>${esc(v.servico)}</dd>
+          <dt>Com</dt><dd>${esc(v.profissional)}</dd>
+          <dt>Quando</dt><dd>${esc(v.quando)}</dd>
+          ${v.endereco ? `<dt>Onde</dt><dd>${esc(v.endereco)}</dd>` : ''}
+        </dl></div>`;
+      const head = `<h1>${esc(v.salao)}</h1>`;
+
+      if (v.status === 'cancelled') {
+        box.innerHTML = `${head}<div class="state"><div class="ico no">✕</div><p class="big">Horário desmarcado</p>
+          <p class="muted">Obrigada por avisar, ${esc(v.cliente)}. Quando quiser, é só agendar de novo.</p></div>
+          <a class="btn btn-primary btn-lg" style="width:100%" href="/s/${esc(v.slug)}#agendar">Agendar outro horário</a>`;
+        return;
+      }
+      if (v.passou || v.status !== 'confirmed') {
+        box.innerHTML = `${head}<p class="sub">Este horário já passou.</p>${details}${back(v.slug)}`;
+        return;
+      }
+      if (v.confirmation === 'confirmed') {
+        box.innerHTML = `${head}<div class="state"><div class="ico ok">✓</div><p class="big">Presença confirmada</p>
+          <p class="muted">Te esperamos, ${esc(v.cliente)}!</p></div>${details}
+          <p class="foot">Surgiu um imprevisto? <button type="button" class="link-btn" id="show-decline">Desmarcar</button></p>
+          ${declineForm()}`;
+        bindDecline();
+        return;
+      }
+      box.innerHTML = `${head}<p class="sub">Oi, ${esc(v.cliente)}! Você confirma seu horário?</p>${details}
+        <div class="actions-col" id="choices">
+          <button class="btn btn-primary btn-lg" id="confirm">Confirmo, estarei lá</button>
+          <button class="btn btn-lg" id="show-decline">Não vou poder ir</button>
+        </div>
+        ${declineForm()}
+        <p class="foot">Quer mudar o horário? <a href="/s/${esc(v.slug)}#agendar">Escolha outro</a> e depois desmarque este.</p>`;
+      $('#confirm').addEventListener('click', () => act({ action: 'confirm' }));
+      bindDecline();
+    }
+
+    const declineForm = () => `
+      <form class="hidden" id="decline-form">
+        <label for="reason">Quer contar o motivo? (opcional)</label>
+        <textarea id="reason" rows="2" maxlength="300" placeholder="Ex.: imprevisto no trabalho"></textarea>
+        <button class="btn btn-danger-solid btn-lg" style="width:100%">Desmarcar meu horário</button>
+      </form>`;
+
+    function bindDecline() {
+      $('#show-decline').addEventListener('click', () => {
+        $('#decline-form').classList.remove('hidden');
+        $('#choices')?.classList.add('hidden');
+        $('#reason').focus();
+      });
+      $('#decline-form').addEventListener('submit', ev => {
+        ev.preventDefault();
+        act({ action: 'decline', reason: $('#reason').value });
+      });
+    }
+
+    async function act(body) {
+      $$('button', box).forEach(b => { b.disabled = true; });
+      try {
+        render(await http('POST', `/api/confirmar/${encodeURIComponent(token)}`, body));
+        toast(body.action === 'confirm' ? 'Presença confirmada!' : 'Horário desmarcado.', 'ok');
+      } catch (e) {
+        toast(e.message, 'error');
+        $$('button', box).forEach(b => { b.disabled = false; });
+      }
+    }
+
+    http('GET', `/api/confirmar/${encodeURIComponent(token)}`)
+      .then(render)
+      .catch(e => { box.innerHTML = `<h1>Link inválido</h1><p class="sub">${esc(e.message)}</p>`; });
+  </script>
+</body>
+</html>

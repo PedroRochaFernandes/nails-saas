@@ -53,6 +53,38 @@ platform.exec(`
     expires_at INTEGER NOT NULL  -- ms desde 1970
   );
   CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+  -- Agente de lembretes: cada mensagem de lembrete (véspera, 2h antes, vaga da fila).
+  -- Fica no banco da plataforma porque as respostas pelo WhatsApp chegam por um número só
+  -- e precisam ser ligadas ao salão certo, e o link de confirmação não diz de qual salão é.
+  CREATE TABLE IF NOT EXISTS reminders (
+    id             INTEGER PRIMARY KEY,
+    salon_id       INTEGER NOT NULL REFERENCES salons(id) ON DELETE CASCADE,
+    appointment_id INTEGER NOT NULL,
+    kind           TEXT NOT NULL,              -- vespera | 2h | vaga
+    phone          TEXT NOT NULL,              -- com DDI (55...), como o WhatsApp usa
+    token          TEXT NOT NULL UNIQUE,       -- link de confirmação /c/<token>
+    channel        TEXT NOT NULL,              -- whatsapp (automático) | manual (envio com um toque)
+    status         TEXT NOT NULL DEFAULT 'queued', -- queued | sent | failed
+    message        TEXT NOT NULL,
+    ai             INTEGER NOT NULL DEFAULT 0, -- 1 = texto escrito pela IA
+    error          TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    sent_at        TEXT,
+    UNIQUE (salon_id, appointment_id, kind)
+  );
+  CREATE INDEX IF NOT EXISTS idx_reminders_phone ON reminders(phone, created_at);
+
+  -- O que os agentes fizeram (aparece no painel do salão)
+  CREATE TABLE IF NOT EXISTS agent_events (
+    id             INTEGER PRIMARY KEY,
+    salon_id       INTEGER NOT NULL REFERENCES salons(id) ON DELETE CASCADE,
+    appointment_id INTEGER,
+    kind           TEXT NOT NULL,   -- confirmed | declined | reschedule | question | sent | failed
+    detail         TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_events_salon ON agent_events(salon_id, id);
 `);
 
 // ================================================================ banco de cada salão
@@ -120,6 +152,8 @@ const TENANT_SCHEMA = `
     cancelled_by   TEXT,                       -- 'cliente' | 'estudio'
     cancelled_at   TEXT,
     cancel_seen    INTEGER NOT NULL DEFAULT 1, -- 0 = cancelamento da cliente ainda não visto no painel
+    confirmation   TEXT NOT NULL DEFAULT '',   -- agente de lembretes: '' | pending | confirmed
+    confirmed_at   TEXT,
     created_at     TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
   );
 
@@ -157,6 +191,10 @@ const DEFAULT_SETTINGS = {
   min_advance_min: '60',     // antecedência mínima para a cliente agendar (min)
   max_days_ahead: '30',      // até quantos dias à frente a cliente pode agendar
   cancel_advance_min: '120', // antecedência mínima para a cliente cancelar online (min)
+  // agente de lembretes
+  reminders_enabled: '1',    // lembrete na véspera, pedindo confirmação
+  reminder_hour: '18:00',    // horário do lembrete da véspera
+  reminder_2h: '1',          // aviso 2 horas antes
 };
 
 const DEFAULT_SERVICES = [
@@ -178,6 +216,10 @@ function openTenant(salonId) {
   if (!t) {
     t = new DatabaseSync(path.join(salonsDir, `${id}.db`));
     t.exec(TENANT_SCHEMA);
+    // colunas acrescentadas depois: bancos de salões antigos ganham a coluna sem perder dados
+    const cols = t.prepare('PRAGMA table_info(appointments)').all().map(c => c.name);
+    if (!cols.includes('confirmation')) t.exec("ALTER TABLE appointments ADD COLUMN confirmation TEXT NOT NULL DEFAULT ''");
+    if (!cols.includes('confirmed_at')) t.exec('ALTER TABLE appointments ADD COLUMN confirmed_at TEXT');
     tenants.set(id, t);
   }
   return t;

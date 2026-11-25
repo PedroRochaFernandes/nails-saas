@@ -3,11 +3,12 @@
 Assinatura mensal para salões: cada salão cria sua conta, ganha uma página de agendamento própria
 (`/s/nome-do-salao`) e um painel completo. Agentes de IA chegam na próxima fase.
 
-**Sem dependências**: só precisa do Node.js 22.13+ (usa o SQLite embutido no Node e a API REST do Stripe via `fetch`).
+Node.js 22.13+ (SQLite embutido no Node). Única dependência: o SDK oficial do Claude (`@anthropic-ai/sdk`), para os agentes de IA. Instale com `npm install`.
 
 ## Rodar
 
 ```bash
+npm install
 npm start
 ```
 
@@ -33,8 +34,8 @@ npm start
 | Plano | Preço | Profissionais ativas |
 |---|---|---|
 | Essencial | R$ 49/mês | 1 |
-| Profissional | R$ 99/mês | até 5 (e agentes de IA quando lançados) |
-| Studio | R$ 179/mês | ilimitadas |
+| Profissional | R$ 99/mês | até 5, com o agente de lembretes |
+| Studio | R$ 179/mês | ilimitadas, com todos os agentes |
 
 Preços e recursos ficam em `billing.js` (`PLANS`); a landing page e o painel leem de lá.
 
@@ -85,17 +86,88 @@ Senhas com scrypt; sessões de 30 dias guardadas só como hash do token; limite 
 server.js        API REST, rotas por salão (/api/s/<slug>/...), contas e servidor de arquivos
 db.js            Banco da plataforma, banco por salão e contexto do salão atual
 billing.js       Planos, situação da assinatura e integração com o Stripe
+agents/
+  lembretes.js   Agente de lembretes: agenda dos envios, link de confirmação, respostas, painel
+  ia.js          Claude: escreve lembretes e entende respostas (com plano B sem IA)
+  whatsapp.js    API do WhatsApp Business (Meta): modelos, texto, webhook
 public/
   landing.html   Página de vendas do nAIls        landing.css
   cadastro.html  Criar conta                       entrar.html   Login
   index.html     Página de agendamento do salão    app.js
+  confirmar.html Link da cliente para confirmar ou desmarcar (/c/<código>)
   admin.html     Painel do salão                   admin.js
   common.js      Funções compartilhadas            style.css     Tema preto e roxo nAIls
 ```
 
-## Próxima fase: agentes de IA
+## Agente de lembretes e confirmações (IA)
 
-- **Lembretes e confirmações**: lembrete na véspera, pedido de confirmação e oferta da vaga à fila de espera se a cliente desmarcar
+Incluído nos planos **Profissional** e **Studio**. Ligado por padrão; cada salão ajusta na aba **Agentes IA** do painel.
+
+- **Na véspera**, a partir do horário escolhido pelo salão (padrão 18:00, nunca depois das 21:30), lembra cada cliente de amanhã
+  e pede confirmação. Quem agendou depois desse horário não recebe (acabou de marcar).
+- **2 horas antes**, um aviso curto (não vai para quem agendou há menos de 3 horas nem para horário desmarcado).
+- Cada mensagem tem um **link pessoal** (`/c/<código>`) onde a cliente **confirma** ou **desmarca** (com motivo opcional), sem login.
+  Desmarcar segue o mesmo caminho do cancelamento pelo site: o horário vai para a **fila de espera** e o painel avisa.
+- Na agenda do painel, cada horário mostra **✓ confirmou** ou **aguardando confirmação**.
+
+### Dois canais
+
+| | Sem a API da Meta (padrão) | Com a API da Meta (WhatsApp Business) |
+|---|---|---|
+| Envio | O agente prepara as mensagens e elas aparecem em **Agentes IA → Para enviar**; a dona toca em "Enviar no WhatsApp" | Automático, pelo número do nAIls, com modelos aprovados pela Meta |
+| Respostas da cliente | Chegam no WhatsApp do salão | O agente entende a resposta e age: **confirma**, **desmarca**, manda o **link para remarcar** ou registra a **pergunta** para o salão |
+| Falha no envio | — | O lembrete cai na lista "Para enviar" do painel |
+| Vaga da fila de espera | Aviso no painel com botão do WhatsApp (já existia) | Avisa a cliente sozinho (modelo `vaga`, opcional) |
+
+### IA (Claude)
+
+Com `ANTHROPIC_API_KEY` configurada, o Claude (`claude-opus-5-5`, esforço baixo, resposta em JSON validado):
+- **escreve os lembretes** do envio com um toque, chamando a cliente pelo nome e com dica de preparo quando faz sentido
+  (ex.: vir sem esmalte para alongamento);
+- **entende as respostas** no WhatsApp ("sim", "não vou conseguir", "dá pra passar pra sexta?", "qual o endereço?")
+  e escreve a resposta usando só os dados do salão.
+
+A mensagem da cliente é tratada como dado: o agente só pode confirmar ou desmarcar **o próprio horário dela**, ou responder.
+**Sem chave, com erro ou recusa da IA, nada para**: o agente usa textos padrão e regras por palavras-chave.
+Se o modelo recusar por segurança, o servidor da Anthropic tenta de novo com um modelo reserva (`fallbacks: "default"`).
+
+| Variável | Para quê |
+|---|---|
+| `ANTHROPIC_API_KEY` | Liga a IA |
+| `ANTHROPIC_MODEL` | Troca o modelo (padrão `claude-opus-5-5`) |
+| `NAILS_AI` | `off` desliga a IA; `on` usa outra credencial do SDK (ex.: `ant auth login`) |
+| `PUBLIC_URL` | Endereço público do site, usado nos links das mensagens (ex.: `https://nails.app`) |
+
+### Configurar o WhatsApp automático (Meta)
+
+1. Crie um app no [Meta for Developers](https://developers.facebook.com) com o produto **WhatsApp**, verifique a empresa e cadastre o número que vai enviar.
+2. Crie e envie para aprovação os modelos (categoria **Utilidade**, idioma Português BR). Todos usam as mesmas 5 variáveis:
+   `{{1}}` nome da cliente, `{{2}}` salão, `{{3}}` serviço, `{{4}}` quando, `{{5}}` link. Sugestões de texto:
+   - `nails_lembrete_vespera`: *Oi, {{1}}! Passando para lembrar do seu horário de {{3}} {{4}}, no {{2}}. Confirme ou desmarque por aqui: {{5}}*
+   - `nails_aviso_2h`: *Oi, {{1}}! Seu horário de {{3}} é {{4}}. Te esperamos no {{2}}! Se não puder vir, avise aqui: {{5}}*
+   - `nails_vaga` (opcional): *Oi, {{1}}! Vagou o horário de {{3}} {{4}} no {{2}} e ele é seu. Confirme ou desmarque: {{5}}*
+3. Configure as variáveis e reinicie o servidor:
+
+| Variável | Valor |
+|---|---|
+| `WHATSAPP_TOKEN` | Token permanente (usuário do sistema) |
+| `WHATSAPP_PHONE_NUMBER_ID` | ID do número |
+| `WHATSAPP_TEMPLATE_VESPERA` / `WHATSAPP_TEMPLATE_2H` / `WHATSAPP_TEMPLATE_VAGA` | Nomes dos modelos aprovados |
+| `WHATSAPP_TEMPLATE_LANG` | Idioma dos modelos (padrão `pt_BR`) |
+| `WHATSAPP_APP_SECRET` | Segredo do app (confere que as respostas vêm mesmo da Meta) |
+| `WHATSAPP_VERIFY_TOKEN` | Texto que você escolhe para a Meta validar o webhook |
+
+4. No app da Meta, aponte o webhook para `https://seu-dominio/api/whatsapp/webhook` com o mesmo `WHATSAPP_VERIFY_TOKEN` e assine o campo **messages**.
+
+A Meta cobra por conversa iniciada pelo modelo. As respostas do agente saem como texto livre, permitido nas 24h após a mensagem da cliente.
+
+### Testar
+
+`NAILS_TEST_CLOCK=1` permite chamar `POST /api/admin/agentes/rodar` com `{ "now": "<data ISO>" }` para simular a véspera
+ou o dia, sem esperar o relógio (só para testes; desligado por padrão). `NAILS_SCHEDULER=off` desliga a verificação a cada minuto.
+
+## Próximos agentes
+
 - **Assistente da dona**: resumo do dia, faturamento, clientes que sumiram com mensagem de reativação, horários fracos
 - **Conteúdo para Instagram**: legendas e ideias de posts, promoções relâmpago para horários vagos
 

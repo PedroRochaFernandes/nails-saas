@@ -13,19 +13,19 @@ export const TRIAL_DAYS = 14;
 
 export const PLANS = {
   essencial: {
-    name: 'Essencial', priceCents: 4900, maxPros: 1,
+    name: 'Essencial', priceCents: 4900, maxPros: 1, agents: false,
     pitch: 'Para a nail designer que atende sozinha.',
     features: ['1 profissional', 'Página de agendamento própria', 'Fila de espera automática', 'Painel com agenda e faturamento'],
   },
   profissional: {
-    name: 'Profissional', priceCents: 9900, maxPros: 5, highlight: true,
+    name: 'Profissional', priceCents: 9900, maxPros: 5, agents: true, highlight: true,
     pitch: 'Para estúdios com equipe.',
-    features: ['Até 5 profissionais', 'Tudo do Essencial', 'Agentes de IA (lançamento em breve)', 'Suporte prioritário'],
+    features: ['Até 5 profissionais', 'Tudo do Essencial', 'Agente de lembretes e confirmações com IA', 'Suporte prioritário'],
   },
   studio: {
-    name: 'Studio', priceCents: 17900, maxPros: null,
+    name: 'Studio', priceCents: 17900, maxPros: null, agents: true,
     pitch: 'Para salões de beleza maiores.',
-    features: ['Profissionais ilimitadas', 'Tudo do Profissional', 'Agentes de IA com uso ampliado', 'Ajuda na configuração inicial'],
+    features: ['Profissionais ilimitadas', 'Tudo do Profissional', 'Todos os agentes de IA', 'Ajuda na configuração inicial'],
   },
 };
 
@@ -63,6 +63,9 @@ export function salonAccess(s, now = new Date()) {
 
 /** Limite de profissionais ativas. Durante o teste grátis vale o plano escolhido (padrão: Profissional). */
 export const maxProsFor = salon => (PLANS[salon.plan] || PLANS.profissional).maxPros;
+
+/** Os agentes de IA estão no plano do salão e a assinatura está em dia? */
+export const agentsAllowed = salon => !!(PLANS[salon.plan] || PLANS.profissional).agents && salonAccess(salon).online;
 
 // ---------------------------------------------------------------- API do Stripe
 /** Converte { a: { b: 1 }, items: [{ x: 2 }] } em a[b]=1&items[0][x]=2 (formato da API do Stripe). */
