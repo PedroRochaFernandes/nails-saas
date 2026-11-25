@@ -47,7 +47,7 @@ async function askJson({ system, user, schema }) {
   } catch (err) {
     if (err instanceof Anthropic.AuthenticationError) throw new Error('Chave da IA inválida');
     if (err instanceof Anthropic.RateLimitError) throw new Error('IA sobrecarregada no momento');
-    if (err instanceof Anthropic.APIError) throw new Error(`IA indisponível (${err.status})`);
+    if (err instanceof Anthropic.APIError) throw new Error(`IA indisponível (${err.status}: ${err.error?.error?.message || err.message})`);
     throw err;
   }
 }
