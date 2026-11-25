@@ -10,7 +10,6 @@ import { PLANS, TRIAL_DAYS, BILLING_MODE, BillingError, salonAccess, maxProsFor,
 import { initReminders, startReminderScheduler, runSalon, panelData, saveReminderSettings, markSent,
   confirmationInfo, confirmationAction, handleInbound } from './agents/lembretes.js';
 import { whatsappEnabled, verifySignature, verifyChallenge, parseInbound } from './agents/whatsapp.js';
-import { aiEnabled } from './agents/ia.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const PORT = Number(process.env.PORT) || 3000;
@@ -862,6 +861,5 @@ if (process.env.NAILS_SCHEDULER !== 'off') startReminderScheduler();
 server.listen(PORT, () => {
   console.log(`\n  💅 nAIls rodando em http://localhost:${PORT}`);
   console.log(`  💳 Cobrança: ${BILLING_MODE === 'stripe' ? 'Stripe' : 'modo demonstração (sem STRIPE_SECRET_KEY)'}`);
-  console.log(`  🤖 Agente de lembretes: ${whatsappEnabled ? 'envio automático pelo WhatsApp' : 'envio com um toque pelo painel'}`
-    + ` · IA ${aiEnabled ? 'ligada' : 'desligada (mensagens padrão)'}\n`);
+  console.log(`  🤖 Agente de lembretes: ${whatsappEnabled ? 'envio automático pelo WhatsApp' : 'envio com um toque pelo painel'}\n`);
 });

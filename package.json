@@ -1,18 +1,14 @@
 {
   "name": "nails-saas",
   "version": "1.0.0",
-  "description": "nAIls: SaaS de agendamento com IA para nail designers e salões de beleza, com planos por assinatura.",
+  "description": "nAIls: SaaS de agendamento para nail designers e salões de beleza, com planos por assinatura.",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning server.js",
-    "dev": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning --watch server.js",
-    "testar-ia": "node --env-file-if-exists=.env scripts/testar-ia.mjs"
+    "dev": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning --watch server.js"
   },
   "engines": {
     "node": ">=22.13"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^1.14.0"
   }
 }

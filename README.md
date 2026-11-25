@@ -1,9 +1,9 @@
-# nAIls — SaaS de agendamento com IA para nail designers e salões de beleza
+# nAIls — SaaS de agendamento para nail designers e salões de beleza
 
 Assinatura mensal para salões: cada salão cria sua conta, ganha uma página de agendamento própria
-(`/s/nome-do-salao`) e um painel completo. Agentes de IA chegam na próxima fase.
+(`/s/nome-do-salao`) e um painel completo, com um agente automático de lembretes e confirmações.
 
-Node.js 22.13+ (SQLite embutido no Node). Única dependência: o SDK oficial do Claude (`@anthropic-ai/sdk`), para os agentes de IA. Instale com `npm install`.
+**Sem dependências**: só precisa do Node.js 22.13+ (usa o SQLite embutido no Node; Stripe e WhatsApp via `fetch`).
 
 ## Rodar
 
@@ -13,11 +13,10 @@ npm start
 ```
 
 Chaves e configurações ficam no arquivo `.env` (copie de `.env.example`; ele não vai para o GitHub).
-Para conferir se a IA está funcionando: `npm run testar-ia`.
 
 | Endereço | O que é |
 |---|---|
-| http://localhost:3000 | Landing page do nAIls (recursos, agentes de IA, planos) |
+| http://localhost:3000 | Landing page do nAIls (recursos, agentes, planos) |
 | http://localhost:3000/cadastro | Criar conta de salão (14 dias grátis, sem cartão) |
 | http://localhost:3000/entrar | Login do painel |
 | http://localhost:3000/painel | Painel do salão |
@@ -91,7 +90,6 @@ db.js            Banco da plataforma, banco por salão e contexto do salão atua
 billing.js       Planos, situação da assinatura e integração com o Stripe
 agents/
   lembretes.js   Agente de lembretes: agenda dos envios, link de confirmação, respostas, painel
-  ia.js          Claude: escreve lembretes e entende respostas (com plano B sem IA)
   whatsapp.js    API do WhatsApp Business (Meta): modelos, texto, webhook
 public/
   landing.html   Página de vendas do nAIls        landing.css
@@ -102,9 +100,9 @@ public/
   common.js      Funções compartilhadas            style.css     Tema preto e roxo nAIls
 ```
 
-## Agente de lembretes e confirmações (IA)
+## Agente de lembretes e confirmações
 
-Incluído nos planos **Profissional** e **Studio**. Ligado por padrão; cada salão ajusta na aba **Agentes IA** do painel.
+Incluído nos planos **Profissional** e **Studio**. Ligado por padrão; cada salão ajusta na aba **Agentes** do painel.
 
 - **Na véspera**, a partir do horário escolhido pelo salão (padrão 18:00, nunca depois das 21:30), lembra cada cliente de amanhã
   e pede confirmação. Quem agendou depois desse horário não recebe (acabou de marcar).
@@ -117,29 +115,11 @@ Incluído nos planos **Profissional** e **Studio**. Ligado por padrão; cada sal
 
 | | Sem a API da Meta (padrão) | Com a API da Meta (WhatsApp Business) |
 |---|---|---|
-| Envio | O agente prepara as mensagens e elas aparecem em **Agentes IA → Para enviar**; a dona toca em "Enviar no WhatsApp" | Automático, pelo número do nAIls, com modelos aprovados pela Meta |
-| Respostas da cliente | Chegam no WhatsApp do salão | O agente entende a resposta e age: **confirma**, **desmarca**, manda o **link para remarcar** ou registra a **pergunta** para o salão |
+| Envio | O agente prepara as mensagens e elas aparecem em **Agentes → Para enviar**; a dona toca em "Enviar no WhatsApp" | Automático, pelo número do nAIls, com modelos aprovados pela Meta |
+| Respostas da cliente | Chegam no WhatsApp do salão | O agente entende a resposta por palavras-chave e age: **confirma**, **desmarca**, manda o **link para remarcar** ou registra a **pergunta** para o salão |
 | Falha no envio | — | O lembrete cai na lista "Para enviar" do painel |
 | Vaga da fila de espera | Aviso no painel com botão do WhatsApp (já existia) | Avisa a cliente sozinho (modelo `vaga`, opcional) |
 
-### IA (Claude)
-
-Com `ANTHROPIC_API_KEY` configurada, o Claude (`claude-opus-5-5`, esforço baixo, resposta em JSON validado):
-- **escreve os lembretes** do envio com um toque, chamando a cliente pelo nome e com dica de preparo quando faz sentido
-  (ex.: vir sem esmalte para alongamento);
-- **entende as respostas** no WhatsApp ("sim", "não vou conseguir", "dá pra passar pra sexta?", "qual o endereço?")
-  e escreve a resposta usando só os dados do salão.
-
-A mensagem da cliente é tratada como dado: o agente só pode confirmar ou desmarcar **o próprio horário dela**, ou responder.
-**Sem chave, com erro ou recusa da IA, nada para**: o agente usa textos padrão e regras por palavras-chave.
-Se o modelo recusar por segurança, o servidor da Anthropic tenta de novo com um modelo reserva (`fallbacks: "default"`).
-
-| Variável | Para quê |
-|---|---|
-| `ANTHROPIC_API_KEY` | Liga a IA |
-| `ANTHROPIC_MODEL` | Troca o modelo (padrão `claude-opus-5-5`) |
-| `NAILS_AI` | `off` desliga a IA; `on` usa outra credencial do SDK (ex.: `ant auth login`) |
-| `PUBLIC_URL` | Endereço público do site, usado nos links das mensagens (ex.: `https://nails.app`) |
 
 ### Configurar o WhatsApp automático (Meta)
 
@@ -168,6 +148,13 @@ A Meta cobra por conversa iniciada pelo modelo. As respostas do agente saem como
 
 `NAILS_TEST_CLOCK=1` permite chamar `POST /api/admin/agentes/rodar` com `{ "now": "<data ISO>" }` para simular a véspera
 ou o dia, sem esperar o relógio (só para testes; desligado por padrão). `NAILS_SCHEDULER=off` desliga a verificação a cada minuto.
+
+## Sem IA paga, por enquanto
+
+O agente de lembretes funciona sem nenhum serviço pago: mensagens prontas (nome, serviço, horário e link)
+e respostas entendidas por palavras-chave ("sim", "confirmo", "não vou", "remarcar"...).
+Uma versão com o Claude escrevendo as mensagens e entendendo respostas livres foi retirada porque a API
+cobra por uso; ela está no histórico do git (commit `114ed39`) para ser religada no futuro.
 
 ## Próximos agentes
 

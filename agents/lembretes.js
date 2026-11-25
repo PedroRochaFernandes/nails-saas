@@ -8,14 +8,14 @@
 //
 // Canais:
 //   whatsapp  envio automático pela API da Meta (modelos aprovados); as respostas da cliente
-//             chegam pelo webhook e a IA entende se ela confirmou, desmarcou, quer remarcar ou perguntou algo
+//             chegam pelo webhook e o agente entende, por palavras-chave, se ela confirmou,
+//             desmarcou, quer remarcar ou perguntou algo
 //   manual    sem a API da Meta: o agente escreve a mensagem e ela aparece no painel para enviar com um toque
 //
 // O link de confirmação funciona nos dois canais: a cliente confirma ou desmarca sem precisar responder.
 import { randomBytes } from 'node:crypto';
 import { platform, runAsSalon, db, getSettings, setSetting } from '../db.js';
 import { agentsAllowed } from '../billing.js';
-import { aiEnabled, writeReminder, interpretReply, interpretReplyRules } from './ia.js';
 import { whatsappEnabled, TEMPLATES, sendTemplate, sendText } from './whatsapp.js';
 
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${Number(process.env.PORT) || 3000}`).replace(/\/$/, '');
@@ -91,16 +91,11 @@ async function createReminder(kind, salon, a, now = new Date()) {
   };
   const auto = whatsappEnabled && !!TEMPLATES[kind];
 
-  let message = null, ai = 0;
-  if (!auto && aiEnabled && kind !== 'vaga') {
-    try { message = (await writeReminder(facts)) + SUFFIX[kind](link); ai = 1; }
-    catch (err) { console.warn(`[lembretes] IA indisponível, usando texto padrão: ${err.message}`); }
-  }
-  message ??= defaultText(kind, facts, link);
+  const message = defaultText(kind, facts, link);
 
-  const ins = platform.prepare(`INSERT OR IGNORE INTO reminders (salon_id, appointment_id, kind, phone, token, channel, message, ai)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(salon.id, a.id, kind, phone, token, auto ? 'whatsapp' : 'manual', message, ai);
+  const ins = platform.prepare(`INSERT OR IGNORE INTO reminders (salon_id, appointment_id, kind, phone, token, channel, message)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(salon.id, a.id, kind, phone, token, auto ? 'whatsapp' : 'manual', message);
   if (!ins.changes) return false; // outra execução criou ao mesmo tempo
   const id = Number(ins.lastInsertRowid);
   if (kind !== '2h') db.prepare(`UPDATE appointments SET confirmation = 'pending' WHERE id = ? AND confirmation = ''`).run(a.id);
@@ -227,6 +222,16 @@ function applyDecline(salon, a, reason, how) {
 }
 
 // ---------------------------------------------------------------- respostas pelo WhatsApp
+/** O que a cliente quis dizer com a resposta ao lembrete, por palavras-chave. */
+export function interpretReplyRules(text) {
+  const t = String(text).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (/(remarc|outro horario|outro dia|mudar (o )?horario|trocar (o )?horario|outra data|mais tarde|mais cedo)/.test(t)) return { intent: 'reschedule' };
+  if (/(nao vou|nao posso|nao consigo|nao poderei|nao vai dar|cancel|desmarc|imprevisto)/.test(t)) return { intent: 'decline' };
+  if (/(^|\b)(sim|confirmo|confirmad[oa]|ok|okay|pode ser|vou sim|estarei|combinado|certo|beleza|blz)(\b|$)|👍|✅/.test(t)) return { intent: 'confirm' };
+  if (/\?/.test(t)) return { intent: 'question' };
+  return { intent: 'other' };
+}
+
 const DEFAULT_REPLY = {
   confirm: 'Obrigada! Seu horário está confirmado. Até lá! 💅',
   decline: 'Tudo bem, seu horário foi desmarcado. Quando quiser, é só agendar de novo.',
@@ -251,27 +256,15 @@ export async function handleInbound({ from, text }) {
     const s = getSettings();
     const active = a.status === 'confirmed' && apptStart(a) > new Date();
 
-    let res = null;
-    if (aiEnabled) {
-      const context = {
-        salao: s.shop_name || salon.name, endereco: s.address || '', telefone: s.phone || '',
-        cliente: firstName(a.customer_name), servico: a.service_name, profissional: a.pro_name, quando: fmtWhen(a),
-        situacao_do_horario: active ? 'marcado' : 'não está mais ativo (cancelado ou já passou)',
-        servicos: db.prepare('SELECT name, price_cents, duration_min FROM services WHERE active = 1 ORDER BY sort, id').all()
-          .map(x => `${x.name}: R$ ${(x.price_cents / 100).toFixed(2).replace('.', ',')}, ${x.duration_min} min`),
-      };
-      try { res = await interpretReply(context, text); }
-      catch (err) { console.warn(`[lembretes] IA indisponível para entender a resposta: ${err.message}`); }
-    }
-    res ??= { ...interpretReplyRules(text), reply: null };
+    const res = interpretReplyRules(text);
 
-    let reply = res.reply || DEFAULT_REPLY[res.intent];
+    let reply = DEFAULT_REPLY[res.intent];
     if (['confirm', 'decline'].includes(res.intent) && !active) {
       reply = `Esse horário não está mais ativo. Para agendar de novo: ${PUBLIC_URL}/s/${salon.slug}`;
     } else if (res.intent === 'confirm') {
       applyConfirm(salon, a, 'pelo WhatsApp');
     } else if (res.intent === 'decline') {
-      applyDecline(salon, a, res.reason || 'Avisou pelo WhatsApp que não vai', 'pelo WhatsApp');
+      applyDecline(salon, a, 'Avisou pelo WhatsApp que não vai', 'pelo WhatsApp');
     } else if (res.intent === 'reschedule') {
       reply += `\n${PUBLIC_URL}/s/${salon.slug}`;
       logEvent(salon.id, a.id, 'reschedule', `${a.customer_name} quer remarcar ${a.service_name}, ${fmtWhen(a)}: "${text}"`);
@@ -296,7 +289,7 @@ export function panelData(salon) {
     .filter(({ r, a }) => a && a.status === 'confirmed' && apptStart(a) > now
       && !(r.kind !== '2h' && a.confirmation === 'confirmed')) // já confirmou: não precisa mais do lembrete
     .map(({ r, a }) => ({
-      id: r.id, kind: r.kind, message: r.message, ai: !!r.ai, error: r.error,
+      id: r.id, kind: r.kind, message: r.message, error: r.error,
       customerName: a.customer_name, date: a.date, start: toHHMM(a.start_min), serviceName: a.service_name,
       url: `https://wa.me/${r.phone}?text=${encodeURIComponent(r.message)}`,
     }));
@@ -306,7 +299,7 @@ export function panelData(salon) {
 
   const events = platform.prepare('SELECT id, kind, detail, created_at FROM agent_events WHERE salon_id = ? ORDER BY id DESC LIMIT 25').all(salon.id);
   return {
-    allowed: agentsAllowed(salon), channel: whatsappEnabled ? 'whatsapp' : 'manual', ai: aiEnabled,
+    allowed: agentsAllowed(salon), channel: whatsappEnabled ? 'whatsapp' : 'manual',
     settings: cfg, queue, events, today: count(today), tomorrow: count(tomorrow),
   };
 }

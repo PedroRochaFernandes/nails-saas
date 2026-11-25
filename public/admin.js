@@ -79,7 +79,7 @@ function renderAgents() {
     <div class="agent-meta">
       <span>Envio: <b>${a.channel === 'whatsapp' ? 'automático pelo WhatsApp' : 'com um toque'}</b>
         ${a.channel === 'whatsapp' ? '· as respostas das clientes são entendidas pelo agente' : '· o agente prepara as mensagens e você envia pelo seu WhatsApp'}</span>
-      <span>Mensagens: <b>${a.ai ? 'escritas pela IA' : 'texto padrão'}</b> · cada cliente recebe um link para confirmar ou desmarcar</span>
+      <span>Cada mensagem traz nome, serviço, horário e um <b>link para a cliente confirmar ou desmarcar</b></span>
     </div>
     <form class="agent-form" id="agent-form">
       <label class="check"><input type="checkbox" name="enabled" ${s.enabled ? 'checked' : ''}> Lembrete na véspera às</label>
@@ -92,7 +92,7 @@ function renderAgents() {
     <h3 style="margin-top:8px">Para enviar ${a.queue.length ? `<span class="tag">${a.queue.length}</span>` : ''}</h3>
     ${a.queue.length ? a.queue.map(q => `
       <div class="queue-item">
-        <div><strong>${esc(q.customerName)}</strong> <span class="muted small">· ${KIND_LABEL[q.kind]} · ${esc(q.serviceName)}, ${fmtDate(q.date, { day: '2-digit', month: '2-digit' })} às ${q.start}${q.ai ? ' · escrita pela IA' : ''}</span>
+        <div><strong>${esc(q.customerName)}</strong> <span class="muted small">· ${KIND_LABEL[q.kind]} · ${esc(q.serviceName)}, ${fmtDate(q.date, { day: '2-digit', month: '2-digit' })} às ${q.start}</span>
           ${q.error ? `<div class="small cancel-why">Envio automático falhou: ${esc(q.error)}</div>` : ''}
           <pre>${esc(q.message)}</pre></div>
         <a class="btn btn-primary btn-sm" href="${q.url}" target="_blank" rel="noopener" data-sent="${q.id}">Enviar no WhatsApp</a>
