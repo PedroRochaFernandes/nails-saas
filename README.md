@@ -12,6 +12,9 @@ npm install
 npm start
 ```
 
+Chaves e configurações ficam no arquivo `.env` (copie de `.env.example`; ele não vai para o GitHub).
+Para conferir se a IA está funcionando: `npm run testar-ia`.
+
 | Endereço | O que é |
 |---|---|
 | http://localhost:3000 | Landing page do nAIls (recursos, agentes de IA, planos) |
